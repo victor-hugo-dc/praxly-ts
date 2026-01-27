@@ -5,6 +5,7 @@ import { Play, Trash2, Code, Terminal, FileJson, AlertCircle, Home, Languages } 
 // CodeMirror Imports
 import CodeMirror from '@uiw/react-codemirror';
 import { python } from '@codemirror/lang-python';
+import { java } from '@codemirror/lang-java';
 import { vscodeDark } from '@uiw/codemirror-theme-vscode';
 
 import { Lexer } from '../language/lexer';
@@ -15,20 +16,17 @@ import type { Program } from '../language/ast';
 import { JSONTree } from '../components/JSONTree';
 
 const SAMPLE_CODE = `x = 10
-y = 5
+y = 5.5
+name = "Praxly"
 
 def check(val):
   if val > 8:
-    print "Value is large"
+    return True
   else:
-    print "Value is small"
+    return False
 
-check(x)
-check(y)
-
-arr = [1, 2, 3]
-for n in arr:
-  print n * 2
+result = check(x)
+print result
 `;
 
 export default function EditorPage() {
@@ -168,11 +166,11 @@ export default function EditorPage() {
                         )}
 
                         {/* Content Switcher */}
-                        <div className="p-4 h-full">
+                        <div className="h-full">
 
                             {/* Output Tab */}
                             {activeTab === 'output' && (
-                                <div className="font-mono text-sm space-y-1 h-full">
+                                <div className="font-mono text-sm space-y-1 h-full p-4">
                                     {output.length === 0 && !error && <div className="text-slate-600 italic mt-10 text-center">Run the code to see output...</div>}
                                     {output.map((line, idx) => (
                                         <div key={idx} className="flex gap-3 group">
@@ -185,20 +183,26 @@ export default function EditorPage() {
 
                             {/* Translation Tab */}
                             {activeTab === 'translation' && (
-                                <div className="h-full flex flex-col">
+                                <div className="h-full flex flex-col overflow-hidden">
                                     {javaCode ? (
-                                        <pre className="text-sm text-blue-100 font-mono leading-relaxed whitespace-pre-wrap">
-                                            {javaCode}
-                                        </pre>
+                                        <CodeMirror
+                                            value={javaCode}
+                                            height="100%"
+                                            theme={vscodeDark}
+                                            extensions={[java()]}
+                                            readOnly={true}
+                                            editable={false}
+                                            className="text-sm h-full font-mono"
+                                        />
                                     ) : (
-                                        <div className="text-slate-600 italic mt-10 text-center">Run code to generate Java translation...</div>
+                                        <div className="text-slate-600 italic mt-10 text-center p-4">Run code to generate Java translation...</div>
                                     )}
                                 </div>
                             )}
 
                             {/* AST Tab */}
                             {activeTab === 'ast' && (
-                                <div className="text-xs font-mono h-full overflow-auto pb-10">
+                                <div className="text-xs font-mono h-full overflow-auto pb-10 p-4">
                                     {ast ? <JSONTree data={ast} /> : <div className="text-slate-600 italic mt-10 text-center">Run code to visualize AST...</div>}
                                 </div>
                             )}
