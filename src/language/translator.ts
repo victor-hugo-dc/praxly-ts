@@ -4,127 +4,191 @@ export class Translator {
     private output: string[] = [];
     private indentLevel = 0;
 
-    translate(program: Program, targetLang: 'java'): string {
+    /**
+     * Generates Java code from the AST
+     */
+    translateToJava(program: Program): string {
         this.output = [];
         this.indentLevel = 0;
 
-        if (targetLang === 'java') {
-            this.emit('public class Main {');
-            this.indent();
-            this.emit('public static void main(String[] args) {');
-            this.indent();
+        this.emit('public class Main {');
+        this.indent();
+        this.emit('public static void main(String[] args) {');
+        this.indent();
 
-            // Separate functions from main execution body
-            const functions = program.body.filter(s => s.type === 'FunctionDeclaration');
-            const mainBody = program.body.filter(s => s.type !== 'FunctionDeclaration');
+        // Extract functions (Java methods) vs Main Body
+        const functions = program.body.filter(s => s.type === 'FunctionDeclaration');
+        const mainBody = program.body.filter(s => s.type !== 'FunctionDeclaration');
 
-            mainBody.forEach(stmt => this.translateStatement(stmt));
+        mainBody.forEach(stmt => this.emitStatement(stmt, 'java'));
 
-            this.dedent();
-            this.emit('}'); // End main
+        this.dedent();
+        this.emit('}'); // End main
 
-            // Emit functions as static methods
-            functions.forEach(func => this.translateStatement(func));
+        // Emit static methods
+        functions.forEach(func => this.emitStatement(func, 'java'));
 
-            this.dedent();
-            this.emit('}'); // End class
-        }
+        this.dedent();
+        this.emit('}'); // End class
 
         return this.output.join('\n');
     }
 
-    private translateStatement(stmt: Statement) {
+    /**
+     * Generates Python code from the AST (Formatting/Transpiling)
+     */
+    translateToPython(program: Program): string {
+        this.output = [];
+        this.indentLevel = 0;
+
+        program.body.forEach(stmt => {
+            this.emitStatement(stmt, 'python');
+            // Add extra newline after functions for PEP8 style
+            if (stmt.type === 'FunctionDeclaration') this.output.push('');
+        });
+
+        return this.output.join('\n');
+    }
+
+    private emitStatement(stmt: Statement, lang: 'java' | 'python') {
         switch (stmt.type) {
             case 'Print':
-                const val = this.translateExpression(stmt.expression);
-                this.emit(`System.out.println(${val});`);
+                const val = this.emitExpression(stmt.expression, lang);
+                if (lang === 'java') this.emit(`System.out.println(${val});`);
+                else this.emit(`print(${val})`);
                 break;
 
             case 'Assignment':
-                // Rudimentary type inference: use 'var' (Java 10+) 
-                // In a real transpiler, you'd need a symbol table to track if variable is already defined
-                this.emit(`var ${stmt.name} = ${this.translateExpression(stmt.value)};`);
+                const rVal = this.emitExpression(stmt.value, lang);
+                if (lang === 'java') this.emit(`var ${stmt.name} = ${rVal};`);
+                else this.emit(`${stmt.name} = ${rVal}`);
                 break;
 
             case 'If':
-                this.emit(`if (${this.translateExpression(stmt.condition)}) {`);
-                this.indent();
-                this.translateBlock(stmt.thenBranch);
-                this.dedent();
-                if (stmt.elseBranch) {
-                    this.emit('} else {');
+                const cond = this.emitExpression(stmt.condition, lang);
+                if (lang === 'java') {
+                    this.emit(`if (${cond}) {`);
                     this.indent();
-                    this.translateBlock(stmt.elseBranch);
+                    this.emitBlock(stmt.thenBranch, lang);
                     this.dedent();
+                    if (stmt.elseBranch) {
+                        this.emit('} else {');
+                        this.indent();
+                        this.emitBlock(stmt.elseBranch, lang);
+                        this.dedent();
+                    }
+                    this.emit('}');
+                } else {
+                    this.emit(`if ${cond}:`);
+                    this.indent();
+                    this.emitBlock(stmt.thenBranch, lang);
+                    this.dedent();
+                    if (stmt.elseBranch) {
+                        this.emit('else:');
+                        this.indent();
+                        this.emitBlock(stmt.elseBranch, lang);
+                        this.dedent();
+                    }
                 }
-                this.emit('}');
                 break;
 
             case 'While':
-                this.emit(`while (${this.translateExpression(stmt.condition)}) {`);
-                this.indent();
-                this.translateBlock(stmt.body);
-                this.dedent();
-                this.emit('}');
-                break;
-
-            case 'For':
-                // Python: for x in arr -> Java: for (var x : arr)
-                this.emit(`for (var ${stmt.variable} : ${this.translateExpression(stmt.iterable)}) {`);
-                this.indent();
-                this.translateBlock(stmt.body);
-                this.dedent();
-                this.emit('}');
-                break;
-
-            case 'FunctionDeclaration':
-                const params = stmt.params.map(p => `Object ${p.name}`).join(', ');
-                this.emit(`public static void ${stmt.name}(${params}) {`);
-                this.indent();
-                this.translateBlock(stmt.body);
-                this.dedent();
-                this.emit('}');
-                break;
-
-            case 'Return':
-                if (stmt.value) {
-                    this.emit(`return ${this.translateExpression(stmt.value)};`);
+                const wCond = this.emitExpression(stmt.condition, lang);
+                if (lang === 'java') {
+                    this.emit(`while (${wCond}) {`);
+                    this.indent();
+                    this.emitBlock(stmt.body, lang);
+                    this.dedent();
+                    this.emit('}');
                 } else {
-                    this.emit('return;');
+                    this.emit(`while ${wCond}:`);
+                    this.indent();
+                    this.emitBlock(stmt.body, lang);
+                    this.dedent();
                 }
                 break;
 
+            case 'For':
+                const iterable = this.emitExpression(stmt.iterable, lang);
+                if (lang === 'java') {
+                    this.emit(`for (var ${stmt.variable} : ${iterable}) {`);
+                    this.indent();
+                    this.emitBlock(stmt.body, lang);
+                    this.dedent();
+                    this.emit('}');
+                } else {
+                    this.emit(`for ${stmt.variable} in ${iterable}:`);
+                    this.indent();
+                    this.emitBlock(stmt.body, lang);
+                    this.dedent();
+                }
+                break;
+
+            case 'FunctionDeclaration':
+                if (lang === 'java') {
+                    const params = stmt.params.map(p => `Object ${p.name}`).join(', ');
+                    this.emit(`public static void ${stmt.name}(${params}) {`);
+                    this.indent();
+                    this.emitBlock(stmt.body, lang);
+                    this.dedent();
+                    this.emit('}');
+                } else {
+                    const params = stmt.params.map(p => p.name).join(', ');
+                    this.emit(`def ${stmt.name}(${params}):`);
+                    this.indent();
+                    this.emitBlock(stmt.body, lang);
+                    this.dedent();
+                }
+                break;
+
+            case 'Return':
+                const retVal = stmt.value ? this.emitExpression(stmt.value, lang) : '';
+                if (lang === 'java') this.emit(`return ${retVal};`);
+                else this.emit(`return ${retVal}`);
+                break;
+
             case 'ExpressionStatement':
-                this.emit(`${this.translateExpression(stmt.expression)};`);
+                const expr = this.emitExpression(stmt.expression, lang);
+                if (lang === 'java') this.emit(`${expr};`);
+                else this.emit(expr);
                 break;
         }
     }
 
-    private translateBlock(block: Block) {
-        block.body.forEach(s => this.translateStatement(s));
+    private emitBlock(block: Block, lang: 'java' | 'python') {
+        block.body.forEach(s => this.emitStatement(s, lang));
     }
 
-    private translateExpression(expr: Expression): string {
+    private emitExpression(expr: Expression, lang: 'java' | 'python'): string {
         switch (expr.type) {
             case 'Literal':
                 if (typeof expr.value === 'string') return `"${expr.value}"`;
-                if (typeof expr.value === 'boolean') return expr.value.toString();
+                if (typeof expr.value === 'boolean') {
+                    if (lang === 'python') return expr.value ? 'True' : 'False';
+                    return expr.value.toString();
+                }
                 return String(expr.value);
 
             case 'Identifier':
                 return expr.name;
 
             case 'BinaryExpression':
-                return `${this.translateExpression(expr.left)} ${expr.operator} ${this.translateExpression(expr.right)}`;
+                return `${this.emitExpression(expr.left, lang)} ${expr.operator} ${this.emitExpression(expr.right, lang)}`;
+
+            case 'UnaryExpression':
+                let op = expr.operator;
+                if (lang === 'java' && op === 'not') op = '!';
+                if (lang === 'python' && op === '!') op = 'not ';
+                return `${op}${this.emitExpression(expr.argument, lang)}`;
 
             case 'CallExpression':
-                const args = expr.arguments.map(a => this.translateExpression(a)).join(', ');
+                const args = expr.arguments.map(a => this.emitExpression(a, lang)).join(', ');
                 return `${expr.callee.name}(${args})`;
 
             case 'ArrayLiteral':
-                // Java array initialization
-                const elements = expr.elements.map(e => this.translateExpression(e)).join(', ');
-                return `new Object[] {${elements}}`;
+                const elements = expr.elements.map(e => this.emitExpression(e, lang)).join(', ');
+                if (lang === 'java') return `new Object[] {${elements}}`;
+                return `[${elements}]`;
 
             default:
                 return '';

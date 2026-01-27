@@ -1,6 +1,11 @@
-import React, { useState } from 'react';
+import { useState, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { Play, Trash2, Code, Terminal, FileJson, AlertCircle, Home, Languages } from 'lucide-react';
+
+// CodeMirror Imports
+import CodeMirror from '@uiw/react-codemirror';
+import { python } from '@codemirror/lang-python';
+import { vscodeDark } from '@uiw/codemirror-theme-vscode';
 
 import { Lexer } from '../language/lexer';
 import { Parser } from '../language/parser';
@@ -8,8 +13,6 @@ import { Interpreter } from '../language/interpreter';
 import { Translator } from '../language/translator';
 import type { Program } from '../language/ast';
 import { JSONTree } from '../components/JSONTree';
-
-import '../index.css'
 
 const SAMPLE_CODE = `x = 10
 y = 5
@@ -32,7 +35,7 @@ export default function EditorPage() {
     const [code, setCode] = useState(SAMPLE_CODE);
     const [output, setOutput] = useState<string[]>([]);
     const [ast, setAst] = useState<Program | null>(null);
-    const [translatedCode, setTranslatedCode] = useState<string>('');
+    const [javaCode, setJavaCode] = useState<string>('');
     const [error, setError] = useState<string | null>(null);
 
     const [activeTab, setActiveTab] = useState<'output' | 'ast' | 'translation'>('output');
@@ -41,21 +44,24 @@ export default function EditorPage() {
         setError(null);
         setOutput([]);
         try {
+            // 1. Lexing
             const lexer = new Lexer(code);
             const tokens = lexer.tokenize();
 
+            // 2. Parsing
             const parser = new Parser(tokens);
             const program = parser.parse();
             setAst(program);
 
+            // 3. Interpreting (Execution)
             const interpreter = new Interpreter();
             const results = interpreter.interpret(program);
             setOutput(results);
 
-            // Auto-translate on run for demo
+            // 4. Translating (Python AST -> Java Code)
             const translator = new Translator();
-            const javaCode = translator.translate(program, 'java');
-            setTranslatedCode(javaCode);
+            const translated = translator.translateToJava(program);
+            setJavaCode(translated);
 
             setActiveTab('output');
         } catch (e: any) {
@@ -70,9 +76,14 @@ export default function EditorPage() {
         setCode('');
         setAst(null);
         setOutput([]);
-        setTranslatedCode('');
+        setJavaCode('');
         setError(null);
     };
+
+    // Optimized change handler for CodeMirror
+    const onChange = useCallback((val: string) => {
+        setCode(val);
+    }, []);
 
     return (
         <div className="flex flex-col h-screen bg-slate-950 text-slate-100 font-sans overflow-hidden">
@@ -110,23 +121,15 @@ export default function EditorPage() {
                         <span className="flex items-center gap-2"><Code size={14} /> src/main.py</span>
                         <span className="text-slate-600">Python 3.10 Compatible</span>
                     </div>
-                    <div className="flex-1 relative bg-slate-950">
-                        <textarea
+                    <div className="flex-1 relative bg-slate-950 overflow-hidden">
+                        {/* CodeMirror Component */}
+                        <CodeMirror
                             value={code}
-                            onChange={(e) => setCode(e.target.value)}
-                            className="code-font absolute inset-0 w-full h-full bg-transparent text-slate-300 p-4 text-sm resize-none focus:outline-none leading-relaxed selection:bg-indigo-900/50"
-                            spellCheck={false}
-                            placeholder="Write your Python code here..."
-                            onKeyDown={(e) => {
-                                if (e.key === 'Tab') {
-                                    e.preventDefault();
-                                    const start = e.currentTarget.selectionStart;
-                                    const end = e.currentTarget.selectionEnd;
-                                    const value = e.currentTarget.value;
-                                    setCode(value.substring(0, start) + "  " + value.substring(end));
-                                    // Note: Cursor position logic omitted for MVP simplicity
-                                }
-                            }}
+                            height="100%"
+                            theme={vscodeDark}
+                            extensions={[python()]}
+                            onChange={onChange}
+                            className="text-sm h-full font-mono"
                         />
                     </div>
                 </div>
@@ -183,9 +186,9 @@ export default function EditorPage() {
                             {/* Translation Tab */}
                             {activeTab === 'translation' && (
                                 <div className="h-full flex flex-col">
-                                    {translatedCode ? (
+                                    {javaCode ? (
                                         <pre className="text-sm text-blue-100 font-mono leading-relaxed whitespace-pre-wrap">
-                                            {translatedCode}
+                                            {javaCode}
                                         </pre>
                                     ) : (
                                         <div className="text-slate-600 italic mt-10 text-center">Run code to generate Java translation...</div>
