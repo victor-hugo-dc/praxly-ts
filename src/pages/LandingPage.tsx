@@ -1,6 +1,3 @@
-// A modern landing page used for routing
-
-import React from 'react';
 import { Link } from 'react-router-dom';
 import { Code, ArrowRight, CheckCircle } from 'lucide-react';
 

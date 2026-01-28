@@ -1,12 +1,7 @@
-// src/language/parser.ts
-import type { Token, TokenType } from './lexer';
-import {
-    type Program, type Statement, type Block, type Expression, type Print, type Assignment, type If, type While, type For,
-    type FunctionDeclaration, type Return, type CallExpression, type Identifier,
-    generateId
-} from './ast';
+import type { Token, TokenType } from '../lexer';
+import { type Program, type Statement, type Block, type Expression, type Assignment, type If, type While, type For, type FunctionDeclaration, type Return, type CallExpression, type Identifier, type ExpressionStatement, type UnaryExpression, generateId } from '../ast';
 
-export class Parser {
+export class CSPParser {
     private tokens: Token[];
     private current = 0;
 
@@ -17,91 +12,109 @@ export class Parser {
     parse(): Program {
         const body: Statement[] = [];
         while (!this.isAtEnd()) {
-            if (this.check('NEWLINE')) { this.advance(); continue; }
             body.push(this.statement());
         }
         return { id: generateId(), type: 'Program', body };
     }
 
-    private statement(): Statement {
-        if (this.check('KEYWORD', 'print')) return this.printStatement();
-        if (this.check('KEYWORD', 'if')) return this.ifStatement();
-        if (this.check('KEYWORD', 'while')) return this.whileStatement();
-        if (this.check('KEYWORD', 'for')) return this.forStatement();
-        if (this.check('KEYWORD', 'def')) return this.functionDeclaration();
-        if (this.check('KEYWORD', 'return')) return this.returnStatement();
-        if (this.check('IDENTIFIER') && this.checkNext('OPERATOR', '=')) return this.assignment();
-
-        // Handle standalone expressions (like function calls)
-        const expr = this.expression();
-        if (this.check('NEWLINE')) this.advance();
-        return { id: generateId(), type: 'ExpressionStatement', expression: expr };
-    }
-
     private block(): Block {
-        this.consume('PUNCTUATION', ':');
-        this.consume('NEWLINE');
-        this.consume('INDENT');
+        this.consume('PUNCTUATION', '{');
         const statements: Statement[] = [];
-        while (!this.check('DEDENT') && !this.isAtEnd()) {
-            if (this.check('NEWLINE')) { this.advance(); continue; }
+        while (!this.check('PUNCTUATION', '}') && !this.isAtEnd()) {
             statements.push(this.statement());
         }
-        this.consume('DEDENT');
+        this.consume('PUNCTUATION', '}');
         return { id: generateId(), type: 'Block', body: statements };
     }
 
-    private printStatement(): Print {
-        this.consume('KEYWORD', 'print');
-        if (this.check('PUNCTUATION', '(')) this.advance();
+    private statement(): Statement {
+        if (this.check('KEYWORD', 'IF')) return this.ifStatement();
+        if (this.check('KEYWORD', 'REPEAT')) return this.repeatStatement();
+        if (this.check('KEYWORD', 'FOR')) return this.forStatement();
+        if (this.check('KEYWORD', 'PROCEDURE')) return this.procedureStatement();
+        if (this.check('KEYWORD', 'RETURN')) return this.returnStatement();
+        if (this.check('KEYWORD', 'DISPLAY')) return this.printStatement();
+
+        // Assignment: x <- 10
+        if (this.check('IDENTIFIER') && this.checkNext('OPERATOR', '<-')) {
+            const name = this.consume('IDENTIFIER').value;
+            this.consume('OPERATOR', '<-');
+            const value = this.expression();
+            return { id: generateId(), type: 'Assignment', name, value };
+        }
+
         const expr = this.expression();
-        if (this.check('PUNCTUATION', ')')) this.advance();
-        if (this.check('NEWLINE')) this.advance();
+        return { id: generateId(), type: 'ExpressionStatement', expression: expr };
+    }
+
+    private printStatement(): Statement {
+        this.consume('KEYWORD', 'DISPLAY');
+        // Fix: Optional Parentheses
+        if (this.check('PUNCTUATION', '(')) {
+            this.consume('PUNCTUATION', '(');
+            const expr = this.expression();
+            this.consume('PUNCTUATION', ')');
+            return { id: generateId(), type: 'Print', expression: expr };
+        }
+        const expr = this.expression();
         return { id: generateId(), type: 'Print', expression: expr };
     }
 
-    private assignment(): Assignment {
-        const name = this.consume('IDENTIFIER').value;
-        this.consume('OPERATOR', '=');
-        const value = this.expression();
-        if (this.check('NEWLINE')) this.advance();
-        return { id: generateId(), type: 'Assignment', name, value };
-    }
-
     private ifStatement(): If {
-        this.consume('KEYWORD', 'if');
+        this.consume('KEYWORD', 'IF');
+        // Fix: Optional Parentheses
+        if (this.check('PUNCTUATION', '(')) this.consume('PUNCTUATION', '(');
         const condition = this.expression();
+        if (this.check('PUNCTUATION', ')')) this.consume('PUNCTUATION', ')');
+
         const thenBranch = this.block();
         let elseBranch: Block | undefined = undefined;
-        if (this.match('KEYWORD', 'else')) { elseBranch = this.block(); }
+        if (this.match('KEYWORD', 'ELSE')) {
+            elseBranch = this.block();
+        }
         return { id: generateId(), type: 'If', condition, thenBranch, elseBranch };
     }
 
-    private whileStatement(): While {
-        this.consume('KEYWORD', 'while');
+    private repeatStatement(): While {
+        this.consume('KEYWORD', 'REPEAT');
+        this.consume('KEYWORD', 'UNTIL');
+
+        // Fix: Optional Parentheses
+        if (this.check('PUNCTUATION', '(')) this.consume('PUNCTUATION', '(');
         const condition = this.expression();
+        if (this.check('PUNCTUATION', ')')) this.consume('PUNCTUATION', ')');
+
+        // Invert condition for While
+        const negatedCondition: UnaryExpression = {
+            id: generateId(),
+            type: 'UnaryExpression',
+            operator: 'not',
+            argument: condition
+        };
+
         const body = this.block();
-        return { id: generateId(), type: 'While', condition, body };
+        return { id: generateId(), type: 'While', condition: negatedCondition, body };
     }
 
     private forStatement(): For {
-        this.consume('KEYWORD', 'for');
+        this.consume('KEYWORD', 'FOR');
+        this.consume('KEYWORD', 'EACH');
         const variable = this.consume('IDENTIFIER').value;
-        this.consume('KEYWORD', 'in');
+        this.consume('KEYWORD', 'IN');
         const iterable = this.expression();
         const body = this.block();
         return { id: generateId(), type: 'For', variable, iterable, body };
     }
 
-    private functionDeclaration(): FunctionDeclaration {
-        this.consume('KEYWORD', 'def');
+    private procedureStatement(): FunctionDeclaration {
+        this.consume('KEYWORD', 'PROCEDURE');
         const name = this.consume('IDENTIFIER').value;
         this.consume('PUNCTUATION', '(');
         const params: Identifier[] = [];
         if (!this.check('PUNCTUATION', ')')) {
             do {
-                const paramName = this.consume('IDENTIFIER').value;
-                params.push({ id: generateId(), type: 'Identifier', name: paramName });
+                const pName = this.consume('IDENTIFIER').value;
+                params.push({ id: generateId(), type: 'Identifier', name: pName });
             } while (this.match('PUNCTUATION', ','));
         }
         this.consume('PUNCTUATION', ')');
@@ -110,41 +123,45 @@ export class Parser {
     }
 
     private returnStatement(): Return {
-        this.consume('KEYWORD', 'return');
+        this.consume('KEYWORD', 'RETURN');
         let value: Expression | undefined = undefined;
-        if (!this.check('NEWLINE') && !this.isAtEnd()) { value = this.expression(); }
-        if (this.check('NEWLINE')) this.advance();
+        // Heuristic: start of expression check
+        if (!this.check('PUNCTUATION', '}') && !this.isAtEnd()) {
+            value = this.expression();
+        }
         return { id: generateId(), type: 'Return', value };
     }
+
+    // --- Expressions ---
 
     private expression(): Expression { return this.logicOr(); }
 
     private logicOr(): Expression {
         let left = this.logicAnd();
-        while (this.match('KEYWORD', 'or')) {
-            const operator = this.previous().value;
+        while (this.match('KEYWORD', 'OR')) {
             const right = this.logicAnd();
-            left = { id: generateId(), type: 'BinaryExpression', left, operator, right };
+            left = { id: generateId(), type: 'BinaryExpression', left, operator: 'or', right };
         }
         return left;
     }
 
     private logicAnd(): Expression {
         let left = this.equality();
-        while (this.match('KEYWORD', 'and')) {
-            const operator = this.previous().value;
+        while (this.match('KEYWORD', 'AND')) {
             const right = this.equality();
-            left = { id: generateId(), type: 'BinaryExpression', left, operator, right };
+            left = { id: generateId(), type: 'BinaryExpression', left, operator: 'and', right };
         }
         return left;
     }
 
     private equality(): Expression {
         let left = this.comparison();
-        while (this.match('OPERATOR', '==', '!=')) {
-            const operator = this.previous().value;
+        while (this.match('OPERATOR', '=', '<>')) {
+            let op = this.previous().value;
+            if (op === '=') op = '==';
+            if (op === '<>') op = '!=';
             const right = this.comparison();
-            left = { id: generateId(), type: 'BinaryExpression', left, operator, right };
+            left = { id: generateId(), type: 'BinaryExpression', left, operator: op, right };
         }
         return left;
     }
@@ -171,19 +188,22 @@ export class Parser {
 
     private factor(): Expression {
         let left = this.unary();
-        while (this.match('OPERATOR', '*', '/', '%')) {
+        while (this.match('OPERATOR', '*', '/')) {
             const operator = this.previous().value;
             const right = this.unary();
             left = { id: generateId(), type: 'BinaryExpression', left, operator, right };
+        }
+        while (this.match('KEYWORD', 'MOD')) {
+            const right = this.unary();
+            left = { id: generateId(), type: 'BinaryExpression', left, operator: '%', right };
         }
         return left;
     }
 
     private unary(): Expression {
-        if (this.match('OPERATOR', '!', '-') || this.match('KEYWORD', 'not')) {
-            const operator = this.previous().value;
+        if (this.match('KEYWORD', 'NOT')) {
             const right = this.unary();
-            return { id: generateId(), type: 'UnaryExpression', operator, argument: right };
+            return { id: generateId(), type: 'UnaryExpression', operator: 'not', argument: right };
         }
         return this.call();
     }
@@ -191,13 +211,14 @@ export class Parser {
     private call(): Expression {
         let expr = this.primary();
         while (true) {
-            if (this.match('PUNCTUATION', '(')) { expr = this.finishCall(expr); } else { break; }
+            if (this.match('PUNCTUATION', '(')) expr = this.finishCall(expr);
+            else break;
         }
         return expr;
     }
 
     private finishCall(callee: Expression): CallExpression {
-        if (callee.type !== 'Identifier') { throw new Error("Can only call identifiers"); }
+        if (callee.type !== 'Identifier') throw new Error("Can only call identifiers");
         const args: Expression[] = [];
         if (!this.check('PUNCTUATION', ')')) {
             do { args.push(this.expression()); } while (this.match('PUNCTUATION', ','));
@@ -209,8 +230,19 @@ export class Parser {
     private primary(): Expression {
         if (this.match('NUMBER')) return { id: generateId(), type: 'Literal', value: parseFloat(this.previous().value), raw: this.previous().value };
         if (this.match('STRING')) return { id: generateId(), type: 'Literal', value: this.previous().value, raw: `"${this.previous().value}"` };
-        if (this.match('BOOLEAN')) return { id: generateId(), type: 'Literal', value: this.previous().value === 'True', raw: this.previous().value };
+        if (this.match('BOOLEAN')) return { id: generateId(), type: 'Literal', value: this.previous().value === 'true', raw: this.previous().value };
+
+        if (this.match('KEYWORD', 'INPUT')) {
+            if (this.check('PUNCTUATION', '(')) {
+                this.consume('PUNCTUATION', '(');
+                this.consume('PUNCTUATION', ')');
+            }
+            const callee: Identifier = { id: generateId(), type: 'Identifier', name: 'INPUT' };
+            return { id: generateId(), type: 'CallExpression', callee, arguments: [] };
+        }
+
         if (this.match('IDENTIFIER')) return { id: generateId(), type: 'Identifier', name: this.previous().value };
+
         if (this.match('PUNCTUATION', '[')) {
             const elements: Expression[] = [];
             if (!this.check('PUNCTUATION', ']')) {
@@ -219,6 +251,7 @@ export class Parser {
             this.consume('PUNCTUATION', ']');
             return { id: generateId(), type: 'ArrayLiteral', elements };
         }
+
         if (this.match('PUNCTUATION', '(')) {
             const expr = this.expression();
             this.consume('PUNCTUATION', ')');
@@ -227,7 +260,6 @@ export class Parser {
         throw new Error(`Expect expression. Found ${this.peek().value}`);
     }
 
-    // Helpers
     private match(type: TokenType, ...values: string[]): boolean {
         if (this.check(type, ...values)) { this.advance(); return true; }
         return false;
@@ -248,7 +280,9 @@ export class Parser {
     }
     private consume(type: TokenType, value?: string): Token {
         if (this.check(type, ...(value ? [value] : []))) return this.advance();
-        throw new Error(`Expected token ${type} ${value || ''}`);
+        // Improved Error Message
+        const found = this.peek();
+        throw new Error(`Expected token ${type} ${value || ''} but found ${found.type} '${found.value}' at position ${found.start}`);
     }
     private advance(): Token {
         if (!this.isAtEnd()) this.current++;

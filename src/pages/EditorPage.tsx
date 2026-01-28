@@ -1,20 +1,25 @@
 import { useState, useCallback, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { Play, Trash2, Code, Terminal, FileJson, AlertCircle, Home, Languages, ChevronDown } from 'lucide-react';
+import { Play, Trash2, Code, Terminal, FileJson, AlertCircle, Home, Languages, ArrowRightLeft } from 'lucide-react';
 
 import CodeMirror from '@uiw/react-codemirror';
 import { python } from '@codemirror/lang-python';
 import { java } from '@codemirror/lang-java';
 import { vscodeDark } from '@uiw/codemirror-theme-vscode';
 
-import { Lexer } from '../language/lexer';
-import { Parser } from '../language/parser';
+import { Lexer as PythonLexer } from '../language/python/lexer';
+import { Parser as PythonParser } from '../language/python/parser';
+import { JavaLexer } from '../language/java/lexer';
+import { JavaParser } from '../language/java/parser';
+import { CSPLexer } from '../language/csp/lexer';
+import { CSPParser } from '../language/csp/parser';
+
 import { Interpreter } from '../language/interpreter';
-import { Translator } from '../language/translator';
+import { Translator, type TargetLanguage } from '../language/translator';
 import type { Program } from '../language/ast';
 import { JSONTree } from '../components/JSONTree';
 
-const SAMPLE_CODE = `x = 10
+const SAMPLE_CODE_PYTHON = `x = 10
 y = 5.5
 name = "Praxly"
 
@@ -28,42 +33,81 @@ result = check(x)
 print result
 `;
 
-type TargetLang = 'java' | 'csp';
+const SAMPLE_CODE_JAVA = `public class Main {
+  public static void main(String[] args) {
+    int x = 10;
+    System.out.println(x);
+  }
+}
+`;
+
+const SAMPLE_CODE_CSP = `x <- 10
+DISPLAY(x)
+IF (x > 5) {
+  DISPLAY("Big")
+}
+`;
+
+type SupportedLang = 'python' | 'java' | 'csp';
 
 export default function EditorPage() {
-    const [code, setCode] = useState(SAMPLE_CODE);
+    const [code, setCode] = useState(SAMPLE_CODE_PYTHON);
     const [output, setOutput] = useState<string[]>([]);
     const [ast, setAst] = useState<Program | null>(null);
 
-    const [targetLang, setTargetLang] = useState<TargetLang>('java');
+    const [sourceLang, setSourceLang] = useState<SupportedLang>('python');
+    const [targetLang, setTargetLang] = useState<SupportedLang>('java');
     const [translatedCode, setTranslatedCode] = useState<string>('');
 
     const [error, setError] = useState<string | null>(null);
     const [activeTab, setActiveTab] = useState<'output' | 'ast' | 'translation'>('output');
 
-    // Re-run translation when language changes if AST exists
     useEffect(() => {
         if (ast) {
             const translator = new Translator();
-            setTranslatedCode(translator.translate(ast, targetLang));
+            try {
+                setTranslatedCode(translator.translate(ast, targetLang));
+            } catch (e: any) {
+                console.warn("Translation failed:", e);
+                setTranslatedCode("// Translation failed or not supported.");
+            }
         }
     }, [targetLang, ast]);
+
+    const parseCode = (lang: SupportedLang, input: string): Program => {
+        let tokens;
+        let parser;
+        switch (lang) {
+            case 'java':
+                tokens = new JavaLexer(input).tokenize();
+                parser = new JavaParser(tokens);
+                return parser.parse();
+            case 'csp':
+                tokens = new CSPLexer(input).tokenize();
+                parser = new CSPParser(tokens);
+                return parser.parse();
+            case 'python':
+            default:
+                tokens = new PythonLexer(input).tokenize();
+                parser = new PythonParser(tokens);
+                return parser.parse();
+        }
+    };
 
     const handleRun = () => {
         setError(null);
         setOutput([]);
         try {
-            const lexer = new Lexer(code);
-            const tokens = lexer.tokenize();
-
-            const parser = new Parser(tokens);
-            const program = parser.parse();
+            // 1. Parse based on Source Language
+            const program = parseCode(sourceLang, code);
             setAst(program);
 
+            // 2. Interpret (Execute AST)
             const interpreter = new Interpreter();
             const results = interpreter.interpret(program);
             setOutput(results);
 
+            // 3. Translate to Target Language
             const translator = new Translator();
             setTranslatedCode(translator.translate(program, targetLang));
 
@@ -87,6 +131,14 @@ export default function EditorPage() {
     const onChange = useCallback((val: string) => {
         setCode(val);
     }, []);
+
+    const getExtensions = (lang: SupportedLang) => {
+        switch (lang) {
+            case 'java': return [java()];
+            case 'python': return [python()];
+            default: return [];
+        }
+    };
 
     return (
         <div className="flex flex-col h-screen bg-slate-950 text-slate-100 font-sans overflow-hidden">
@@ -116,16 +168,28 @@ export default function EditorPage() {
 
             <main className="flex-1 flex overflow-hidden">
                 <div className="w-1/2 flex flex-col border-r border-slate-800">
-                    <div className="h-10 bg-slate-900 flex items-center px-4 border-b border-slate-800 text-xs font-medium text-slate-400 justify-between select-none">
-                        <span className="flex items-center gap-2"><Code size={14} /> src/main.py</span>
-                        <span className="text-slate-600">Python 3.10 Compatible</span>
+                    <div className="h-10 bg-slate-900 flex items-center justify-between px-2 border-b border-slate-800 text-xs font-medium text-slate-400 select-none relative z-20">
+                        <div className="flex items-center relative group h-full">
+                            <button className="flex items-center gap-2 px-3 py-2 hover:bg-slate-800 rounded-md transition-colors text-slate-300">
+                                <Code size={14} className="text-indigo-400" />
+                                {sourceLang === 'python' ? 'Python' : sourceLang === 'java' ? 'Java' : 'CSP (Pseudo)'}
+                                <ChevronDown size={12} className="opacity-50" />
+                            </button>
+                            <div className="absolute top-full left-0 w-40 bg-slate-800 border border-slate-700 hidden group-hover:block rounded-md shadow-xl overflow-hidden mt-1">
+                                <button onClick={() => { setSourceLang('python'); setCode(SAMPLE_CODE_PYTHON); }} className="block w-full text-left px-4 py-2 hover:bg-slate-700 hover:text-white">Python</button>
+                                <button onClick={() => { setSourceLang('java'); setCode(SAMPLE_CODE_JAVA); }} className="block w-full text-left px-4 py-2 hover:bg-slate-700 hover:text-white">Java</button>
+                                <button onClick={() => { setSourceLang('csp'); setCode(SAMPLE_CODE_CSP); }} className="block w-full text-left px-4 py-2 hover:bg-slate-700 hover:text-white">AP CSP</button>
+                            </div>
+                        </div>
+                        <span className="text-slate-600">Input Source</span>
                     </div>
+
                     <div className="flex-1 relative bg-slate-950 overflow-hidden">
                         <CodeMirror
                             value={code}
                             height="100%"
                             theme={vscodeDark}
-                            extensions={[python()]}
+                            extensions={getExtensions(sourceLang)}
                             onChange={onChange}
                             className="text-sm h-full font-mono"
                         />
@@ -140,34 +204,20 @@ export default function EditorPage() {
                         >
                             <Terminal size={14} /> Output
                         </button>
-
-                        {/* Language Selector Dropdown in Tab */}
                         <div className={`flex-1 flex items-center justify-center border-b-2 transition-colors relative group ${activeTab === 'translation' ? 'border-indigo-500 text-white bg-slate-800/50' : 'border-transparent text-slate-500 hover:text-slate-300 hover:bg-slate-800/30'}`}>
                             <button
                                 onClick={() => setActiveTab('translation')}
                                 className="flex items-center gap-2 py-3 text-xs font-semibold uppercase tracking-wider w-full justify-center h-full"
                             >
-                                <Languages size={14} />
-                                {targetLang === 'java' ? 'Java' : 'CSP'} Translation
+                                <ArrowRightLeft size={14} />
+                                To: {targetLang === 'java' ? 'Java' : targetLang === 'python' ? 'Python' : 'CSP'}
                             </button>
-
-                            {/* Hover Dropdown */}
-                            <div className="absolute top-full left-0 w-full bg-slate-800 border border-slate-700 hidden group-hover:block z-50">
-                                <button
-                                    onClick={() => { setTargetLang('java'); setActiveTab('translation'); }}
-                                    className="block w-full text-left px-4 py-2 text-xs text-slate-300 hover:bg-slate-700 hover:text-white"
-                                >
-                                    Java
-                                </button>
-                                <button
-                                    onClick={() => { setTargetLang('csp'); setActiveTab('translation'); }}
-                                    className="block w-full text-left px-4 py-2 text-xs text-slate-300 hover:bg-slate-700 hover:text-white"
-                                >
-                                    AP CSP (Pseudo)
-                                </button>
+                            <div className="absolute top-full left-0 w-full bg-slate-800 border border-slate-700 hidden group-hover:block z-50 rounded-b-md shadow-xl">
+                                <button onClick={() => { setTargetLang('java'); setActiveTab('translation'); }} className="block w-full text-left px-4 py-2 text-xs text-slate-300 hover:bg-slate-700 hover:text-white">Java</button>
+                                <button onClick={() => { setTargetLang('python'); setActiveTab('translation'); }} className="block w-full text-left px-4 py-2 text-xs text-slate-300 hover:bg-slate-700 hover:text-white">Python</button>
+                                <button onClick={() => { setTargetLang('csp'); setActiveTab('translation'); }} className="block w-full text-left px-4 py-2 text-xs text-slate-300 hover:bg-slate-700 hover:text-white">AP CSP</button>
                             </div>
                         </div>
-
                         <button
                             onClick={() => setActiveTab('ast')}
                             className={`flex-1 flex items-center justify-center gap-2 py-3 text-xs font-semibold uppercase tracking-wider border-b-2 transition-colors ${activeTab === 'ast' ? 'border-indigo-500 text-white bg-slate-800/50' : 'border-transparent text-slate-500 hover:text-slate-300 hover:bg-slate-800/30'}`}
@@ -183,7 +233,6 @@ export default function EditorPage() {
                                 <span className="font-mono">{error}</span>
                             </div>
                         )}
-
                         <div className="h-full">
                             {activeTab === 'output' && (
                                 <div className="font-mono text-sm space-y-1 h-full p-4">
@@ -196,7 +245,6 @@ export default function EditorPage() {
                                     ))}
                                 </div>
                             )}
-
                             {activeTab === 'translation' && (
                                 <div className="h-full flex flex-col overflow-hidden">
                                     {translatedCode ? (
@@ -204,7 +252,7 @@ export default function EditorPage() {
                                             value={translatedCode}
                                             height="100%"
                                             theme={vscodeDark}
-                                            extensions={targetLang === 'java' ? [java()] : []} // No specific highlighter for CSP yet, defaults to plain text which is fine
+                                            extensions={getExtensions(targetLang)}
                                             readOnly={true}
                                             editable={false}
                                             className="text-sm h-full font-mono"
@@ -214,7 +262,6 @@ export default function EditorPage() {
                                     )}
                                 </div>
                             )}
-
                             {activeTab === 'ast' && (
                                 <div className="text-xs font-mono h-full overflow-auto pb-10 p-4">
                                     {ast ? <JSONTree data={ast} /> : <div className="text-slate-600 italic mt-10 text-center">Run code to visualize AST...</div>}
@@ -225,5 +272,13 @@ export default function EditorPage() {
                 </div>
             </main>
         </div>
+    );
+}
+
+function ChevronDown({ size, className }: { size: number, className?: string }) {
+    return (
+        <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+            <path d="m6 9 6 6 6-6" />
+        </svg>
     );
 }
