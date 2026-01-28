@@ -1,4 +1,3 @@
-// src/language/interpreter.ts
 import type { Program, Statement, Expression, FunctionDeclaration } from './ast';
 
 class Environment {

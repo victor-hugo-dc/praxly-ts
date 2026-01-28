@@ -1,4 +1,4 @@
-import type { Program, Statement, Expression, Block, BinaryExpression, UnaryExpression } from './ast';
+import type { Program, Statement, Expression, Block } from './ast';
 
 // --- Types & Interfaces ---
 
@@ -512,7 +512,8 @@ export class Translator {
             default: throw new Error(`Unsupported target language: ${targetLang}`);
         }
 
-        return emitter.visitProgram(program) || emitter.getGeneratedCode();
+        emitter.visitProgram(program);
+        return emitter.getGeneratedCode();
     }
 
     private analyze(program: Program): TranslationContext {

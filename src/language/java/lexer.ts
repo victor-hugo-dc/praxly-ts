@@ -1,4 +1,4 @@
-import type { Token, TokenType } from '../lexer';
+import type { Token } from '../lexer';
 
 export class JavaLexer {
     private pos = 0;

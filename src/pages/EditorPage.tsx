@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { Play, Trash2, Code, Terminal, FileJson, AlertCircle, Home, Languages, ArrowRightLeft } from 'lucide-react';
+import { Play, Trash2, Code, Terminal, FileJson, AlertCircle, Home, ArrowRightLeft } from 'lucide-react';
 
 import CodeMirror from '@uiw/react-codemirror';
 import { python } from '@codemirror/lang-python';
@@ -15,7 +15,7 @@ import { CSPLexer } from '../language/csp/lexer';
 import { CSPParser } from '../language/csp/parser';
 
 import { Interpreter } from '../language/interpreter';
-import { Translator, type TargetLanguage } from '../language/translator';
+import { Translator } from '../language/translator';
 import type { Program } from '../language/ast';
 import { JSONTree } from '../components/JSONTree';
 

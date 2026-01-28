@@ -1,5 +1,3 @@
-import React from 'react';
-
 export const JSONTree = ({ data, level = 0 }: { data: any, level?: number }) => {
     if (data === null) return <span className="text-slate-500">null</span>;
     if (data === undefined) return <span className="text-slate-500">undefined</span>;

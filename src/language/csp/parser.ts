@@ -1,5 +1,5 @@
 import type { Token, TokenType } from '../lexer';
-import { type Program, type Statement, type Block, type Expression, type Assignment, type If, type While, type For, type FunctionDeclaration, type Return, type CallExpression, type Identifier, type ExpressionStatement, type UnaryExpression, generateId } from '../ast';
+import { type Program, type Statement, type Block, type Expression, type If, type While, type For, type FunctionDeclaration, type Return, type CallExpression, type Identifier, type UnaryExpression, generateId } from '../ast';
 
 export class CSPParser {
     private tokens: Token[];
