@@ -43,7 +43,7 @@ export class CSPLexer {
                 while (this.pos < this.input.length && /[a-zA-Z0-9_]/.test(this.input[this.pos])) {
                     value += this.input[this.pos++];
                 }
-                const keywords = ['IF', 'ELSE', 'REPEAT', 'UNTIL', 'FOR', 'EACH', 'IN', 'PROCEDURE', 'RETURN', 'DISPLAY', 'INPUT', 'NOT', 'AND', 'OR', 'MOD', 'true', 'false'];
+                const keywords = ['IF', 'ELSE', 'REPEAT', 'UNTIL', 'FOR', 'EACH', 'IN', 'PROCEDURE', 'RETURN', 'DISPLAY', 'INPUT', 'NOT', 'AND', 'OR', 'MOD', 'true', 'false', 'CLASS', 'PRIVATE', 'PUBLIC', 'CONSTRUCTOR', 'THIS', 'NEW'];
                 const type = keywords.includes(value) ? 'KEYWORD' : 'IDENTIFIER';
                 if (value === 'true' || value === 'false') tokens.push({ type: 'BOOLEAN', value, start });
                 else tokens.push({ type, value, start });

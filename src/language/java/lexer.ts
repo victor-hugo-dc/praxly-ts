@@ -49,8 +49,8 @@ export class JavaLexer {
                 while (this.pos < this.input.length && /[a-zA-Z0-9_]/.test(this.input[this.pos])) {
                     value += this.input[this.pos++];
                 }
-                // FIXED: Removed 'main' from keywords so it parses as IDENTIFIER
-                const keywords = ['public', 'class', 'static', 'void', 'int', 'double', 'boolean', 'if', 'else', 'while', 'for', 'return', 'true', 'false', 'var', 'new'];
+                // Keywords including OOP-related keywords
+                const keywords = ['public', 'class', 'static', 'void', 'int', 'double', 'boolean', 'if', 'else', 'while', 'for', 'return', 'true', 'false', 'var', 'new', 'private', 'protected', 'extends', 'this', 'null', 'final', 'abstract', 'interface', 'implements', 'package', 'import', 'String', 'char', 'float', 'long'];
                 const type = keywords.includes(value) ? 'KEYWORD' : 'IDENTIFIER';
                 if (value === 'true' || value === 'false') tokens.push({ type: 'BOOLEAN', value, start });
                 else tokens.push({ type, value, start });

@@ -1,4 +1,4 @@
-import type { Program, Statement, Expression, Block } from './ast';
+import type { Program, Statement, Expression, Block, ClassDeclaration, MethodDeclaration, FieldDeclaration, Constructor } from './ast';
 
 // --- Types & Interfaces ---
 
@@ -73,6 +73,10 @@ abstract class ASTVisitor {
 
     abstract visitProgram(program: Program): void;
     abstract visitBlock(block: Block): void;
+    abstract visitClassDeclaration(classDecl: ClassDeclaration): void;
+    abstract visitMethodDeclaration(method: MethodDeclaration): void;
+    abstract visitFieldDeclaration(field: FieldDeclaration): void;
+    abstract visitConstructor(ctor: Constructor): void;
 
     // Statements
     abstract visitPrint(stmt: any): void;
@@ -98,6 +102,10 @@ abstract class ASTVisitor {
             case 'FunctionDeclaration': this.visitFunctionDeclaration(stmt); break;
             case 'Return': this.visitReturn(stmt); break;
             case 'ExpressionStatement': this.visitExpressionStatement(stmt); break;
+            case 'ClassDeclaration': this.visitClassDeclaration(stmt); break;
+            case 'FieldDeclaration': this.visitFieldDeclaration(stmt); break;
+            case 'Constructor': this.visitConstructor(stmt); break;
+            case 'MethodDeclaration': this.visitMethodDeclaration(stmt); break;
         }
     }
 
@@ -119,7 +127,8 @@ abstract class ASTVisitor {
                 if (left === 'double') return 'double';
                 return 'int';
             case 'CallExpression':
-                if (this.context.functionReturnTypes.has(expr.callee.name)) return this.context.functionReturnTypes.get(expr.callee.name)!;
+                const calleeName = (expr.callee as any).name;
+                if (calleeName && this.context.functionReturnTypes.has(calleeName)) return this.context.functionReturnTypes.get(calleeName)!;
                 return 'var';
             default: return 'var';
         }
@@ -130,26 +139,95 @@ abstract class ASTVisitor {
 
 class JavaEmitter extends ASTVisitor {
     visitProgram(program: Program): void {
-        // Reset symbol table for emission
-        this.context.symbolTable = new SymbolTable();
+        // Separate classes, functions, and main code
+        const classes = program.body.filter(s => s.type === 'ClassDeclaration');
+        const functions = program.body.filter(s => s.type === 'FunctionDeclaration');
+        const mainBody = program.body.filter(s => s.type !== 'ClassDeclaration' && s.type !== 'FunctionDeclaration');
 
-        this.emit('public class Main {');
-        this.indent();
-        this.emit('public static void main(String[] args) {');
+        // Emit classes first
+        classes.forEach(classDecl => {
+            this.visitClassDeclaration(classDecl as ClassDeclaration);
+            this.emit('');
+        });
+
+        // Emit main class if there's any code to emit
+        if (functions.length > 0 || mainBody.length > 0) {
+            this.context.symbolTable = new SymbolTable();
+            this.emit('public class Main {');
+            this.indent();
+            
+            // Emit functions as static methods
+            functions.forEach(func => {
+                this.visitFunctionDeclaration(func as any);
+                this.emit('');
+            });
+            
+            // Emit main method with remaining code
+            if (mainBody.length > 0) {
+                this.emit('public static void main(String[] args) {');
+                this.indent();
+                mainBody.forEach(stmt => this.visitStatement(stmt));
+                this.dedent();
+                this.emit('}');
+            }
+            
+            this.dedent();
+            this.emit('}');
+        }
+    }
+
+    visitClassDeclaration(classDecl: ClassDeclaration): void {
+        const superClass = classDecl.superClass ? ` extends ${classDecl.superClass.name}` : '';
+        this.emit(`public class ${classDecl.name}${superClass} {`);
         this.indent();
 
-        const mainBody = program.body.filter(s => s.type !== 'FunctionDeclaration');
-        mainBody.forEach(stmt => this.visitStatement(stmt));
+        // Emit fields and methods
+        classDecl.body.forEach(member => {
+            this.visitStatement(member);
+            this.emit('');
+        });
 
         this.dedent();
         this.emit('}');
+    }
 
-        const functions = program.body.filter(s => s.type === 'FunctionDeclaration');
-        functions.forEach(func => {
-            this.emit('');
-            this.visitStatement(func);
-        });
+    visitFieldDeclaration(field: FieldDeclaration): void {
+        let line = `${field.access} `;
+        if (field.isStatic) line += 'static ';
+        let type = field.fieldType;
+        if (type === 'auto') type = field.initializer ? this.inferType(field.initializer) : 'Object';
+        line += `${type} ${field.name}`;
+        if (field.initializer) {
+            line += ` = ${this.generateExpression(field.initializer, 0)}`;
+        }
+        this.emit(`${line};`);
+    }
 
+    visitConstructor(ctor: Constructor): void {
+        const className = 'TempClass'; // We'll need context for this - for now using placeholder
+        const params = ctor.params.map(p => `${p.paramType} ${p.name}`).join(', ');
+        this.emit(`public ${className}(${params}) {`);
+        this.indent();
+        this.context.symbolTable.enterScope();
+        ctor.params.forEach(p => this.context.symbolTable.set(p.name, p.paramType));
+        this.visitBlock(ctor.body);
+        this.context.symbolTable.exitScope();
+        this.dedent();
+        this.emit('}');
+    }
+
+    visitMethodDeclaration(method: MethodDeclaration): void {
+        let line = `${method.access} `;
+        if (method.isStatic) line += 'static ';
+        let returnType = method.returnType === 'auto' ? 'Object' : method.returnType;
+        line += `${returnType} ${method.name}(`;
+        line += method.params.map(p => `${p.paramType} ${p.name}`).join(', ') + ')';
+        this.emit(`${line} {`);
+        this.indent();
+        this.context.symbolTable.enterScope();
+        method.params.forEach(p => this.context.symbolTable.set(p.name, p.paramType));
+        this.visitBlock(method.body);
+        this.context.symbolTable.exitScope();
         this.dedent();
         this.emit('}');
     }
@@ -256,11 +334,26 @@ class JavaEmitter extends ASTVisitor {
 
         switch (expr.type) {
             case 'Literal':
-                if (typeof expr.value === 'string') output = `"${expr.value}"`;
-                else if (typeof expr.value === 'boolean') output = expr.value.toString(); // Java uses lower case true/false
+                if (typeof expr.value === 'string') {
+                    // Handle f-strings by removing the prefix
+                    const strVal = expr.value.startsWith('f') || expr.value.startsWith('r') || expr.value.startsWith('b') 
+                        ? expr.value.substring(1) 
+                        : expr.value;
+                    output = `"${strVal}"`;
+                } else if (typeof expr.value === 'boolean') output = expr.value.toString();
                 else output = String(expr.value);
                 break;
             case 'Identifier': output = expr.name; break;
+            case 'ThisExpression': output = 'this'; break;
+            case 'NewExpression':
+                currentPrecedence = Precedence.Instantiation;
+                const args = expr.arguments.map(a => this.generateExpression(a, 0)).join(', ');
+                output = `new ${expr.className}(${args})`;
+                break;
+            case 'MemberExpression':
+                currentPrecedence = Precedence.Member;
+                output = `${this.generateExpression(expr.object, currentPrecedence)}.${expr.property.name}`;
+                break;
             case 'BinaryExpression':
                 const opMap: Record<string, { op: string, prec: number }> = {
                     'or': { op: '||', prec: Precedence.LogicalOr }, 'and': { op: '&&', prec: Precedence.LogicalAnd },
@@ -282,8 +375,11 @@ class JavaEmitter extends ASTVisitor {
                 break;
             case 'CallExpression':
                 currentPrecedence = Precedence.Call;
-                const args = expr.arguments.map(a => this.generateExpression(a, 0)).join(', ');
-                output = `${expr.callee.name}(${args})`;
+                const args2 = expr.arguments.map(a => this.generateExpression(a, 0)).join(', ');
+                const calleeStr = (expr.callee as any).type === 'MemberExpression' 
+                    ? this.generateExpression(expr.callee as any, 0) 
+                    : (expr.callee as any).name;
+                output = `${calleeStr}(${args2})`;
                 break;
             case 'ArrayLiteral':
                 const type = this.inferType(expr);
@@ -298,14 +394,55 @@ class JavaEmitter extends ASTVisitor {
 
 class CSPEmitter extends ASTVisitor {
     visitProgram(program: Program): void {
-        const functions = program.body.filter(s => s.type === 'FunctionDeclaration');
-        const mainBody = program.body.filter(s => s.type !== 'FunctionDeclaration');
+        const classes = program.body.filter(s => s.type === 'ClassDeclaration');
+        const nonClasses = program.body.filter(s => s.type !== 'ClassDeclaration');
 
-        mainBody.forEach(stmt => this.visitStatement(stmt));
-        functions.forEach(func => {
+        classes.forEach(classDecl => {
+            this.visitClassDeclaration(classDecl as ClassDeclaration);
             this.emit('');
-            this.visitStatement(func);
         });
+        nonClasses.forEach(stmt => this.visitStatement(stmt));
+    }
+
+    visitClassDeclaration(classDecl: ClassDeclaration): void {
+        this.emit(`CLASS ${classDecl.name}`);
+        this.emit('{');
+        this.indent();
+        classDecl.body.forEach(member => {
+            this.visitStatement(member);
+            this.emit('');
+        });
+        this.dedent();
+        this.emit('}');
+    }
+
+    visitFieldDeclaration(field: FieldDeclaration): void {
+        let line = `${field.access === 'private' ? 'PRIVATE' : 'PUBLIC'} ${field.name}`;
+        if (field.initializer) {
+            line += ` <- ${this.generateExpression(field.initializer, 0)}`;
+        }
+        this.emit(line);
+    }
+
+    visitConstructor(ctor: Constructor): void {
+        const params = ctor.params.map(p => p.name).join(', ');
+        this.emit(`CONSTRUCTOR (${params})`);
+        this.emit('{');
+        this.indent();
+        this.visitBlock(ctor.body);
+        this.dedent();
+        this.emit('}');
+    }
+
+    visitMethodDeclaration(method: MethodDeclaration): void {
+        const access = method.access === 'private' ? 'PRIVATE' : 'PUBLIC';
+        const params = method.params.map(p => p.name).join(', ');
+        this.emit(`${access} PROCEDURE ${method.name} (${params})`);
+        this.emit('{');
+        this.indent();
+        this.visitBlock(method.body);
+        this.dedent();
+        this.emit('}');
     }
 
     visitBlock(block: Block): void {
@@ -359,11 +496,26 @@ class CSPEmitter extends ASTVisitor {
 
         switch (expr.type) {
             case 'Literal':
-                if (typeof expr.value === 'string') output = `"${expr.value}"`;
-                else if (typeof expr.value === 'boolean') output = expr.value ? 'true' : 'false';
+                if (typeof expr.value === 'string') {
+                    // Handle f-strings by removing the prefix
+                    const strVal = expr.value.startsWith('f') || expr.value.startsWith('r') || expr.value.startsWith('b') 
+                        ? expr.value.substring(1) 
+                        : expr.value;
+                    output = `"${strVal}"`;
+                } else if (typeof expr.value === 'boolean') output = expr.value ? 'true' : 'false';
                 else output = String(expr.value);
                 break;
             case 'Identifier': output = expr.name; break;
+            case 'ThisExpression': output = 'THIS'; break;
+            case 'NewExpression':
+                currentPrecedence = Precedence.Instantiation;
+                const args = expr.arguments.map(a => this.generateExpression(a, 0)).join(', ');
+                output = `NEW ${expr.className}(${args})`;
+                break;
+            case 'MemberExpression':
+                currentPrecedence = Precedence.Member;
+                output = `${this.generateExpression(expr.object, currentPrecedence)}.${expr.property.name}`;
+                break;
             case 'BinaryExpression':
                 const opMap: Record<string, { op: string, prec: number }> = {
                     'or': { op: 'OR', prec: Precedence.LogicalOr }, 'and': { op: 'AND', prec: Precedence.LogicalAnd },
@@ -385,8 +537,11 @@ class CSPEmitter extends ASTVisitor {
                 break;
             case 'CallExpression':
                 currentPrecedence = Precedence.Call;
-                const args = expr.arguments.map(a => this.generateExpression(a, 0)).join(', ');
-                output = `${expr.callee.name}(${args})`;
+                const args2 = expr.arguments.map(a => this.generateExpression(a, 0)).join(', ');
+                const calleeStr = (expr.callee as any).type === 'MemberExpression' 
+                    ? this.generateExpression(expr.callee as any, 0) 
+                    : (expr.callee as any).name;
+                output = `${calleeStr}(${args2})`;
                 break;
             case 'ArrayLiteral':
                 const elems = expr.elements.map(e => this.generateExpression(e, 0)).join(', ');
@@ -399,14 +554,68 @@ class CSPEmitter extends ASTVisitor {
 
 class PythonEmitter extends ASTVisitor {
     visitProgram(program: Program): void {
-        const functions = program.body.filter(s => s.type === 'FunctionDeclaration');
-        const mainBody = program.body.filter(s => s.type !== 'FunctionDeclaration');
+        const classes = program.body.filter(s => s.type === 'ClassDeclaration');
+        const nonClasses = program.body.filter(s => s.type !== 'ClassDeclaration');
+
+        classes.forEach(classDecl => {
+            this.visitClassDeclaration(classDecl as ClassDeclaration);
+            this.emit('');
+        });
+
+        const functions = nonClasses.filter(s => s.type === 'FunctionDeclaration');
+        const mainBody = nonClasses.filter(s => s.type !== 'FunctionDeclaration');
 
         functions.forEach(func => {
             this.visitStatement(func);
             this.emit('');
         });
         mainBody.forEach(stmt => this.visitStatement(stmt));
+    }
+
+    visitClassDeclaration(classDecl: ClassDeclaration): void {
+        const baseClass = classDecl.superClass ? `(${classDecl.superClass.name})` : '';
+        this.emit(`class ${classDecl.name}${baseClass}:`);
+        this.indent();
+        
+        classDecl.body.forEach(member => {
+            this.visitStatement(member);
+            this.emit('');
+        });
+
+        this.dedent();
+    }
+
+    visitFieldDeclaration(field: FieldDeclaration): void {
+        // In Python, fields are typically set in __init__
+        let line = `self.${field.name}`;
+        if (field.initializer) {
+            line += ` = ${this.generateExpression(field.initializer, 0)}`;
+        } else {
+            line += ` = None`;
+        }
+        this.emit(line);
+    }
+
+    visitConstructor(ctor: Constructor): void {
+        const params = ctor.params.map(p => p.name).join(', ');
+        this.emit(`def __init__(self, ${params}):`);
+        this.indent();
+        this.context.symbolTable.enterScope();
+        ctor.params.forEach(p => this.context.symbolTable.set(p.name, p.paramType || 'auto'));
+        this.visitBlock(ctor.body);
+        this.context.symbolTable.exitScope();
+        this.dedent();
+    }
+
+    visitMethodDeclaration(method: MethodDeclaration): void {
+        const params = method.params.map(p => p.name).join(', ');
+        this.emit(`def ${method.name}(self, ${params}):`);
+        this.indent();
+        this.context.symbolTable.enterScope();
+        method.params.forEach(p => this.context.symbolTable.set(p.name, p.paramType || 'auto'));
+        this.visitBlock(method.body);
+        this.context.symbolTable.exitScope();
+        this.dedent();
     }
 
     visitBlock(block: Block): void {
@@ -460,11 +669,26 @@ class PythonEmitter extends ASTVisitor {
 
         switch (expr.type) {
             case 'Literal':
-                if (typeof expr.value === 'string') output = `"${expr.value}"`;
-                else if (typeof expr.value === 'boolean') output = expr.value ? 'True' : 'False';
+                if (typeof expr.value === 'string') {
+                    // Handle f-strings by removing the prefix
+                    const strVal = expr.value.startsWith('f') || expr.value.startsWith('r') || expr.value.startsWith('b') 
+                        ? expr.value.substring(1) 
+                        : expr.value;
+                    output = `"${strVal}"`;
+                } else if (typeof expr.value === 'boolean') output = expr.value ? 'True' : 'False';
                 else output = String(expr.value);
                 break;
             case 'Identifier': output = expr.name; break;
+            case 'ThisExpression': output = 'self'; break;
+            case 'NewExpression':
+                currentPrecedence = Precedence.Instantiation;
+                const args = expr.arguments.map(a => this.generateExpression(a, 0)).join(', ');
+                output = `${expr.className}(${args})`;
+                break;
+            case 'MemberExpression':
+                currentPrecedence = Precedence.Member;
+                output = `${this.generateExpression(expr.object, currentPrecedence)}.${expr.property.name}`;
+                break;
             case 'BinaryExpression':
                 const opMap: Record<string, { op: string, prec: number }> = {
                     'or': { op: 'or', prec: Precedence.LogicalOr }, 'and': { op: 'and', prec: Precedence.LogicalAnd },
@@ -486,8 +710,11 @@ class PythonEmitter extends ASTVisitor {
                 break;
             case 'CallExpression':
                 currentPrecedence = Precedence.Call;
-                const args = expr.arguments.map(a => this.generateExpression(a, 0)).join(', ');
-                output = `${expr.callee.name}(${args})`;
+                const args2 = expr.arguments.map(a => this.generateExpression(a, 0)).join(', ');
+                const calleeStr = (expr.callee as any).type === 'MemberExpression' 
+                    ? this.generateExpression(expr.callee as any, 0) 
+                    : (expr.callee as any).name;
+                output = `${calleeStr}(${args2})`;
                 break;
             case 'ArrayLiteral':
                 const elems = expr.elements.map(e => this.generateExpression(e, 0)).join(', ');
@@ -541,7 +768,8 @@ export class Translator {
                     if (left === 'double') return 'double';
                     return 'int';
                 case 'CallExpression':
-                    if (context.functionReturnTypes.has(expr.callee.name)) return context.functionReturnTypes.get(expr.callee.name)!;
+                    const calleeNameForAnalysis = (expr.callee as any).name;
+                    if (calleeNameForAnalysis && context.functionReturnTypes.has(calleeNameForAnalysis)) return context.functionReturnTypes.get(calleeNameForAnalysis)!;
                     return 'var';
                 default: return 'var';
             }

@@ -1,5 +1,5 @@
 import type { Token, TokenType } from '../lexer';
-import { type Program, type Statement, type Block, type Expression, type If, type While, type For, type Return, type CallExpression, type Identifier, generateId } from '../ast';
+import { type Program, type Statement, type Block, type Expression, type If, type While, type For, type Return, type CallExpression, type Identifier, type ClassDeclaration, type FieldDeclaration, type Constructor, type MethodDeclaration, type Parameter, type AccessModifier, generateId } from '../ast';
 
 export class JavaParser {
     private tokens: Token[];
@@ -10,92 +10,136 @@ export class JavaParser {
     }
 
     parse(): Program {
-        if (this.check('KEYWORD', 'public') && this.checkNext('KEYWORD', 'class')) {
-            this.consume('KEYWORD', 'public');
-            this.consume('KEYWORD', 'class');
-            this.consume('IDENTIFIER');
-            this.consume('PUNCTUATION', '{');
-
-            const body: Statement[] = [];
-
-            while (!this.check('PUNCTUATION', '}') && !this.isAtEnd()) {
-                this.parseClassMember(body);
-            }
-
-            if (this.check('PUNCTUATION', '}')) this.consume('PUNCTUATION', '}');
-            return { id: generateId(), type: 'Program', body };
-        } else {
-            const body: Statement[] = [];
-            while (!this.isAtEnd()) {
-                if (this.looksLikeMethod()) {
-                    this.parseClassMember(body);
-                } else {
-                    body.push(this.statement());
-                }
-            }
-            return { id: generateId(), type: 'Program', body };
+        const body: Statement[] = [];
+        while (!this.isAtEnd()) {
+            body.push(this.topLevelDeclaration());
         }
+        return { id: generateId(), type: 'Program', body };
     }
 
-    private parseClassMember(body: Statement[]) {
-        while (this.match('KEYWORD', 'public') || this.match('KEYWORD', 'static') || this.match('KEYWORD', 'private')) {
+    private topLevelDeclaration(): Statement {
+        // Handle class declarations
+        if (this.check('KEYWORD', 'public', 'private', 'protected') || this.checkPeekAhead('KEYWORD', 'class', 2)) {
+            return this.classDeclaration();
+        }
+        // Handle regular statements for non-class programs
+        return this.statement();
+    }
+
+    private classDeclaration(): ClassDeclaration {
+        this.parseAccessModifier(); // consume access modifier but typically classes are public
+        this.consume('KEYWORD', 'class');
+        const name = this.consume('IDENTIFIER').value;
+
+        let superClass: Identifier | undefined = undefined;
+        if (this.match('KEYWORD', 'extends')) {
+            superClass = { id: generateId(), type: 'Identifier', name: this.consume('IDENTIFIER').value };
         }
 
-        if (this.check('KEYWORD') || this.check('IDENTIFIER')) this.advance();
+        this.consume('PUNCTUATION', '{');
+        const body: (FieldDeclaration | Constructor | MethodDeclaration)[] = [];
 
-        const nameToken = this.consume('IDENTIFIER');
-        const name = nameToken.value;
+        while (!this.check('PUNCTUATION', '}') && !this.isAtEnd()) {
+            body.push(this.classBodyDeclaration());
+        }
+
+        this.consume('PUNCTUATION', '}');
+        return { id: generateId(), type: 'ClassDeclaration', name, superClass, body };
+    }
+
+    private classBodyDeclaration(): FieldDeclaration | Constructor | MethodDeclaration {
+        const access = this.parseAccessModifier();
+        const isStatic = this.match('KEYWORD', 'static');
+        this.match('KEYWORD', 'final'); // consume but don't need to track
+
+        // Constructor: className (params) { ... }
+        if (this.check('IDENTIFIER') && this.peek().value === this.previous().value) {
+            return this.constructorDeclaration(access);
+        }
+
+        // Check if it's a method or field
+        // Accept type keywords (String, int, etc) or identifier types
+        let typeString: string;
+        if (this.isTypeStart()) {
+            typeString = this.peek().value;
+            this.advance();
+        } else if (this.check('IDENTIFIER')) {
+            typeString = this.peek().value;
+            this.advance();
+        } else {
+            throw new Error("Expected type in class member declaration");
+        }
+
+        const name = this.consume('IDENTIFIER').value;
 
         if (this.check('PUNCTUATION', '(')) {
-            this.consume('PUNCTUATION', '(');
-            const params: Identifier[] = [];
-            if (!this.check('PUNCTUATION', ')')) {
-                do {
-                    if (this.check('KEYWORD') || this.check('IDENTIFIER')) this.advance();
-                    if (this.check('PUNCTUATION', '[')) { this.advance(); this.consume('PUNCTUATION', ']'); }
-
-                    const pName = this.consume('IDENTIFIER').value;
-                    params.push({ id: generateId(), type: 'Identifier', name: pName });
-                } while (this.match('PUNCTUATION', ','));
-            }
-            this.consume('PUNCTUATION', ')');
-
-            const methodBlock = this.block();
-
-            if (name === 'main') {
-                body.push(...methodBlock.body);
-            } else {
-                body.push({
-                    id: generateId(),
-                    type: 'FunctionDeclaration',
-                    name,
-                    params,
-                    body: methodBlock
-                });
-            }
+            // It's a method
+            return this.methodDeclaration(name, access, isStatic, typeString);
         } else {
-            let value: Expression = { id: generateId(), type: 'Literal', value: null, raw: 'null' };
+            // It's a field
+            let initializer: Expression | undefined = undefined;
             if (this.match('OPERATOR', '=')) {
-                value = this.expression();
+                initializer = this.expression();
             }
             this.consume('PUNCTUATION', ';');
-            body.push({ id: generateId(), type: 'Assignment', name, value });
+            return { id: generateId(), type: 'FieldDeclaration', name, fieldType: typeString, isStatic, access, initializer };
         }
+
+        throw new Error("Expected class member declaration");
     }
 
-    private looksLikeMethod(): boolean {
-        const start = this.current;
-        let isMethod = false;
-        try {
-            while (this.check('KEYWORD', 'public', 'static', 'private')) this.advance();
-            if (this.check('KEYWORD') || this.check('IDENTIFIER')) this.advance();
-            if (this.check('IDENTIFIER')) {
-                this.advance();
-                if (this.check('PUNCTUATION', '(')) isMethod = true;
-            }
-        } catch (e) { isMethod = false; }
-        this.current = start;
-        return isMethod;
+    private constructorDeclaration(access: AccessModifier): Constructor {
+        this.consume('IDENTIFIER'); // consume class name 
+        this.consume('PUNCTUATION', '(');
+        const params = this.parseParameters();
+        this.consume('PUNCTUATION', ')');
+        const body = this.block();
+        return { id: generateId(), type: 'Constructor', access, params, body };
+    }
+
+    private methodDeclaration(name: string, access: AccessModifier, isStatic: boolean, returnType: string): MethodDeclaration {
+        this.consume('PUNCTUATION', '(');
+        const params = this.parseParameters();
+        this.consume('PUNCTUATION', ')');
+        const body = this.block();
+        return { id: generateId(), type: 'MethodDeclaration', name, access, isStatic, returnType, params, body };
+    }
+
+    private parseParameters(): Parameter[] {
+        const params: Parameter[] = [];
+        if (!this.check('PUNCTUATION', ')')) {
+            do {
+                // Accept both KEYWORD types (String, int, etc) and IDENTIFIER types
+                let paramType: string;
+                if (this.isTypeStart()) {
+                    paramType = this.peek().value;
+                    this.advance();
+                } else {
+                    paramType = this.consume('IDENTIFIER').value;
+                }
+                // Handle array types (e.g., String[])
+                while (this.match('PUNCTUATION', '[')) {
+                    this.consume('PUNCTUATION', ']');
+                    paramType += '[]';
+                }
+                const paramName = this.consume('IDENTIFIER').value;
+                params.push({ id: generateId(), type: 'Parameter', name: paramName, paramType });
+            } while (this.match('PUNCTUATION', ','));
+        }
+        return params;
+    }
+
+    private parseAccessModifier(): AccessModifier {
+        if (this.match('KEYWORD', 'public')) return 'public';
+        if (this.match('KEYWORD', 'private')) return 'private';
+        if (this.match('KEYWORD', 'protected')) return 'protected';
+        return 'public'; // default access
+    }
+
+    private checkPeekAhead(type: TokenType, value: string, distance: number): boolean {
+        if (this.current + distance >= this.tokens.length) return false;
+        const token = this.tokens[this.current + distance];
+        return token.type === type && token.value === value;
     }
 
     private block(): Block {
@@ -119,7 +163,8 @@ export class JavaParser {
 
         if (this.isTypeStart()) {
             this.advance();
-            if (this.check('PUNCTUATION', '[')) { this.advance(); this.consume('PUNCTUATION', ']'); }
+            // Handle array types (e.g., String[] arr)
+            while (this.check('PUNCTUATION', '[')) { this.advance(); this.consume('PUNCTUATION', ']'); }
 
             const name = this.consume('IDENTIFIER').value;
             let value: Expression = { id: generateId(), type: 'Literal', value: null, raw: 'null' };
@@ -286,14 +331,51 @@ export class JavaParser {
             const right = this.unary();
             return { id: generateId(), type: 'UnaryExpression', operator, argument: right };
         }
-        return this.call();
+        if (this.match('KEYWORD', 'new')) {
+            return this.newExpression();
+        }
+        return this.postfix();
     }
 
-    private call(): Expression {
-        let expr = this.primary();
-        while (true) {
-            if (this.match('PUNCTUATION', '(')) expr = this.finishCall(expr);
-            else break;
+    private newExpression(): Expression {
+        const className = this.consume('IDENTIFIER').value;
+        this.consume('PUNCTUATION', '(');
+        const args: Expression[] = [];
+        if (!this.check('PUNCTUATION', ')')) {
+            do { args.push(this.expression()); } while (this.match('PUNCTUATION', ','));
+        }
+        this.consume('PUNCTUATION', ')');
+        return { id: generateId(), type: 'NewExpression', className, arguments: args };
+    }
+
+    private postfix(): Expression {
+        let expr = this.call();
+        while (this.match('PUNCTUATION', '.')) {
+            const property = this.consume('IDENTIFIER').value;
+            if (this.check('PUNCTUATION', '(')) {
+                // Method call: obj.method(args)
+                this.advance();
+                const args: Expression[] = [];
+                if (!this.check('PUNCTUATION', ')')) {
+                    do { args.push(this.expression()); } while (this.match('PUNCTUATION', ','));
+                }
+                this.consume('PUNCTUATION', ')');
+                expr = {
+                    id: generateId(),
+                    type: 'CallExpression',
+                    callee: { id: generateId(), type: 'Identifier', name: property },
+                    arguments: args
+                };
+            } else {
+                // Field access: obj.field
+                expr = {
+                    id: generateId(),
+                    type: 'MemberExpression',
+                    object: expr,
+                    property: { id: generateId(), type: 'Identifier', name: property },
+                    isMethod: false
+                };
+            }
         }
         return expr;
     }
@@ -312,25 +394,23 @@ export class JavaParser {
         if (this.match('NUMBER')) return { id: generateId(), type: 'Literal', value: parseFloat(this.previous().value), raw: this.previous().value };
         if (this.match('STRING')) return { id: generateId(), type: 'Literal', value: this.previous().value, raw: `"${this.previous().value}"` };
         if (this.match('BOOLEAN')) return { id: generateId(), type: 'Literal', value: this.previous().value === 'true', raw: this.previous().value };
+        if (this.match('KEYWORD', 'null')) return { id: generateId(), type: 'Literal', value: null, raw: 'null' };
+        if (this.match('KEYWORD', 'this')) return { id: generateId(), type: 'ThisExpression' };
         if (this.match('IDENTIFIER')) return { id: generateId(), type: 'Identifier', name: this.previous().value };
-        if (this.match('KEYWORD', 'new')) {
-            this.advance();
-            this.consume('PUNCTUATION', '[');
-            this.consume('PUNCTUATION', ']');
-            this.consume('PUNCTUATION', '{');
-            const elements: Expression[] = [];
-            if (!this.check('PUNCTUATION', '}')) {
-                do { elements.push(this.expression()); } while (this.match('PUNCTUATION', ','));
-            }
-            this.consume('PUNCTUATION', '}');
-            return { id: generateId(), type: 'ArrayLiteral', elements };
-        }
         if (this.match('PUNCTUATION', '(')) {
             const expr = this.expression();
             this.consume('PUNCTUATION', ')');
             return expr;
         }
         throw new Error(`Expect expression. Found ${this.peek().value}`);
+    }
+
+    private call(): Expression {
+        let expr = this.primary();
+        while (this.match('PUNCTUATION', '(')) {
+            expr = this.finishCall(expr);
+        }
+        return expr;
     }
 
     private match(type: TokenType, ...values: string[]): boolean {

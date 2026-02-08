@@ -1,7 +1,8 @@
 import type { Token, TokenType } from '../lexer';
 import {
-    type Program, type Statement, type Block, type Expression, type Print, type Assignment, type If, type While, type For,
-    type FunctionDeclaration, type Return, type CallExpression, type Identifier,
+    type Program, type Statement, type Block, type Expression, type Print, type If, type While, type For,
+    type FunctionDeclaration, type Return, type CallExpression, type Identifier, type ClassDeclaration, type FieldDeclaration,
+    type Constructor, type MethodDeclaration, type Parameter,
     generateId
 } from '../ast';
 
@@ -17,9 +18,137 @@ export class Parser {
         const body: Statement[] = [];
         while (!this.isAtEnd()) {
             if (this.check('NEWLINE')) { this.advance(); continue; }
-            body.push(this.statement());
+            body.push(this.topLevelDeclaration());
         }
         return { id: generateId(), type: 'Program', body };
+    }
+
+    private topLevelDeclaration(): Statement {
+        if (this.check('KEYWORD', 'class')) {
+            return this.classDeclaration();
+        }
+        return this.statement();
+    }
+
+    private classDeclaration(): ClassDeclaration {
+        this.consume('KEYWORD', 'class');
+        const name = this.consume('IDENTIFIER').value;
+        
+        let superClass: Identifier | undefined = undefined;
+        if (this.match('PUNCTUATION', '(')) {
+            if (!this.check('PUNCTUATION', ')')) {
+                superClass = { id: generateId(), type: 'Identifier', name: this.consume('IDENTIFIER').value };
+            }
+            this.consume('PUNCTUATION', ')');
+        }
+
+        this.consume('PUNCTUATION', ':');
+        this.consume('NEWLINE');
+        this.consume('INDENT');
+
+        const body: (FieldDeclaration | Constructor | MethodDeclaration)[] = [];
+
+        while (!this.check('DEDENT') && !this.isAtEnd()) {
+            if (this.check('NEWLINE')) { this.advance(); continue; }
+            body.push(this.classBodyDeclaration());
+        }
+
+        this.consume('DEDENT');
+        return { id: generateId(), type: 'ClassDeclaration', name, superClass, body };
+    }
+
+    private classBodyDeclaration(): FieldDeclaration | Constructor | MethodDeclaration {
+        // In Python, constructors are __init__ and methods are defined with def
+        if (this.check('KEYWORD', 'def')) {
+            return this.pythonMethod();
+        }
+
+        // Field declaration: name = value
+        if (this.check('IDENTIFIER')) {
+            const name = this.consume('IDENTIFIER').value;
+            let initializer: Expression | undefined = undefined;
+            if (this.match('OPERATOR', '=')) {
+                initializer = this.expression();
+            }
+            if (this.check('NEWLINE')) this.advance();
+            return { id: generateId(), type: 'FieldDeclaration', name, fieldType: 'auto', isStatic: false, access: 'public', initializer };
+        }
+
+        throw new Error("Expected class body declaration");
+    }
+
+    private pythonMethod(): MethodDeclaration | Constructor {
+        this.consume('KEYWORD', 'def');
+        const rawName = this.consume('IDENTIFIER').value;
+        const name = this.convertMagicMethodName(rawName);
+        this.consume('PUNCTUATION', '(');
+
+        const params: Parameter[] = [];
+        if (!this.check('PUNCTUATION', ')')) {
+            do {
+                // Allow both IDENTIFIER and 'self' keyword as parameter names
+                let paramName: string;
+                if (this.check('KEYWORD', 'self')) {
+                    paramName = this.advance().value;
+                } else {
+                    paramName = this.consume('IDENTIFIER').value;
+                }
+                params.push({ id: generateId(), type: 'Parameter', name: paramName, paramType: 'auto' });
+            } while (this.match('PUNCTUATION', ','));
+        }
+        this.consume('PUNCTUATION', ')');
+        this.consume('PUNCTUATION', ':');
+        this.consume('NEWLINE');
+        this.consume('INDENT');
+
+        const statements: Statement[] = [];
+        while (!this.check('DEDENT') && !this.isAtEnd()) {
+            if (this.check('NEWLINE')) { this.advance(); continue; }
+            statements.push(this.statement());
+        }
+        this.consume('DEDENT');
+
+        const body: Block = { id: generateId(), type: 'Block', body: statements };
+
+        if (name === '__init__' || name === 'Constructor') {
+            return { id: generateId(), type: 'Constructor', access: 'public', params, body };
+        }
+        return { id: generateId(), type: 'MethodDeclaration', name, access: 'public', isStatic: false, returnType: 'auto', params, body };
+    }
+
+    private convertMagicMethodName(name: string): string {
+        // Map Python magic methods to conventional names or Java equivalents
+        const magicMethods: { [key: string]: string } = {
+            '__init__': '__init__',      // Will be converted to constructor
+            '__str__': 'toString',
+            '__repr__': 'toString',
+            '__len__': 'length',
+            '__getitem__': 'get',
+            '__setitem__': 'set',
+            '__delitem__': 'remove',
+            '__add__': 'add',
+            '__sub__': 'subtract',
+            '__mul__': 'multiply',
+            '__truediv__': 'divide',
+            '__floordiv__': 'intDivide',
+            '__mod__': 'modulo',
+            '__pow__': 'power',
+            '__eq__': 'equals',
+            '__ne__': 'notEquals',
+            '__lt__': 'lessThan',
+            '__le__': 'lessOrEqual',
+            '__gt__': 'greaterThan',
+            '__ge__': 'greaterOrEqual',
+            '__and__': 'bitwiseAnd',
+            '__or__': 'bitwiseOr',
+            '__xor__': 'bitwiseXor',
+            '__hash__': 'hashCode',
+            '__iter__': 'iterator',
+            '__next__': 'next',
+            '__enter__': 'enter',
+            '__exit__': 'exit',
+        };
+        return magicMethods[name] || name;
     }
 
     private statement(): Statement {
@@ -29,12 +158,38 @@ export class Parser {
         if (this.check('KEYWORD', 'for')) return this.forStatement();
         if (this.check('KEYWORD', 'def')) return this.functionDeclaration();
         if (this.check('KEYWORD', 'return')) return this.returnStatement();
-        if (this.check('IDENTIFIER') && this.checkNext('OPERATOR', '=')) return this.assignment();
 
-        // Handle standalone expressions (like function calls)
+        // Parse expression and check if it's an assignment
         const expr = this.expression();
+        
+        if (this.match('OPERATOR', '=')) {
+            const value = this.expression();
+            if (this.check('NEWLINE')) this.advance();
+            
+            // Handle both simple identifier assignments and member expressions
+            if (expr.type === 'Identifier') {
+                return { id: generateId(), type: 'Assignment', name: expr.name, value };
+            } else if (expr.type === 'MemberExpression') {
+                // For member expression assignment, we create an assignment-like structure
+                return { 
+                    id: generateId(), 
+                    type: 'Assignment', 
+                    name: `${this.generateMemberPath(expr)}`,
+                    value 
+                };
+            }
+        }
+        
         if (this.check('NEWLINE')) this.advance();
         return { id: generateId(), type: 'ExpressionStatement', expression: expr };
+    }
+    
+    private generateMemberPath(expr: any): string {
+        if (expr.type === 'Identifier') return expr.name;
+        if (expr.type === 'MemberExpression') {
+            return `${this.generateMemberPath(expr.object)}.${expr.property.name}`;
+        }
+        return 'unknown';
     }
 
     private block(): Block {
@@ -57,14 +212,6 @@ export class Parser {
         if (this.check('PUNCTUATION', ')')) this.advance();
         if (this.check('NEWLINE')) this.advance();
         return { id: generateId(), type: 'Print', expression: expr };
-    }
-
-    private assignment(): Assignment {
-        const name = this.consume('IDENTIFIER').value;
-        this.consume('OPERATOR', '=');
-        const value = this.expression();
-        if (this.check('NEWLINE')) this.advance();
-        return { id: generateId(), type: 'Assignment', name, value };
     }
 
     private ifStatement(): If {
@@ -94,12 +241,19 @@ export class Parser {
 
     private functionDeclaration(): FunctionDeclaration {
         this.consume('KEYWORD', 'def');
-        const name = this.consume('IDENTIFIER').value;
+        const rawName = this.consume('IDENTIFIER').value;
+        const name = this.convertMagicMethodName(rawName);
         this.consume('PUNCTUATION', '(');
         const params: Identifier[] = [];
         if (!this.check('PUNCTUATION', ')')) {
             do {
-                const paramName = this.consume('IDENTIFIER').value;
+                // Allow both IDENTIFIER and 'self' keyword as parameter names
+                let paramName: string;
+                if (this.check('KEYWORD', 'self')) {
+                    paramName = this.advance().value;
+                } else {
+                    paramName = this.consume('IDENTIFIER').value;
+                }
                 params.push({ id: generateId(), type: 'Identifier', name: paramName });
             } while (this.match('PUNCTUATION', ','));
         }
@@ -184,7 +338,45 @@ export class Parser {
             const right = this.unary();
             return { id: generateId(), type: 'UnaryExpression', operator, argument: right };
         }
-        return this.call();
+        return this.postfix();
+    }
+
+    private postfix(): Expression {
+        let expr = this.call();
+        while (this.match('PUNCTUATION', '.')) {
+            const property = this.consume('IDENTIFIER').value;
+            if (this.check('PUNCTUATION', '(')) {
+                // Method call
+                this.advance();
+                const args: Expression[] = [];
+                if (!this.check('PUNCTUATION', ')')) {
+                    do { args.push(this.expression()); } while (this.match('PUNCTUATION', ','));
+                }
+                this.consume('PUNCTUATION', ')');
+                expr = {
+                    id: generateId(),
+                    type: 'CallExpression',
+                    callee: {
+                        id: generateId(),
+                        type: 'MemberExpression',
+                        object: expr,
+                        property: { id: generateId(), type: 'Identifier', name: property },
+                        isMethod: true
+                    },
+                    arguments: args
+                };
+            } else {
+                // Member access
+                expr = {
+                    id: generateId(),
+                    type: 'MemberExpression',
+                    object: expr,
+                    property: { id: generateId(), type: 'Identifier', name: property },
+                    isMethod: false
+                };
+            }
+        }
+        return expr;
     }
 
     private call(): Expression {
@@ -209,6 +401,8 @@ export class Parser {
         if (this.match('NUMBER')) return { id: generateId(), type: 'Literal', value: parseFloat(this.previous().value), raw: this.previous().value };
         if (this.match('STRING')) return { id: generateId(), type: 'Literal', value: this.previous().value, raw: `"${this.previous().value}"` };
         if (this.match('BOOLEAN')) return { id: generateId(), type: 'Literal', value: this.previous().value === 'True', raw: this.previous().value };
+        if (this.match('KEYWORD', 'None')) return { id: generateId(), type: 'Literal', value: null, raw: 'None' };
+        if (this.match('KEYWORD', 'self')) return { id: generateId(), type: 'ThisExpression' };
         if (this.match('IDENTIFIER')) return { id: generateId(), type: 'Identifier', name: this.previous().value };
         if (this.match('PUNCTUATION', '[')) {
             const elements: Expression[] = [];
@@ -238,16 +432,10 @@ export class Parser {
         if (values.length > 0 && !values.includes(token.value)) return false;
         return true;
     }
-    private checkNext(type: TokenType, value?: string): boolean {
-        if (this.current + 1 >= this.tokens.length) return false;
-        const token = this.tokens[this.current + 1];
-        if (token.type !== type) return false;
-        if (value && token.value !== value) return false;
-        return true;
-    }
     private consume(type: TokenType, value?: string): Token {
         if (this.check(type, ...(value ? [value] : []))) return this.advance();
-        throw new Error(`Expected token ${type} ${value || ''}`);
+        const currentToken = this.peek();
+        throw new Error(`Expected token ${type} ${value || ''} but found ${currentToken.type} '${currentToken.value}' at position ${this.current}`);
     }
     private advance(): Token {
         if (!this.isAtEnd()) this.current++;

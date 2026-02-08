@@ -72,13 +72,28 @@ export class Lexer {
                 continue;
             }
 
+            // Handle f-strings (f"..." or f'...')
+            if ((char === 'f' || char === 'r' || char === 'b') && this.pos + 1 < this.input.length && (this.input[this.pos + 1] === '"' || this.input[this.pos + 1] === "'")) {
+                const prefix = char;
+                const quote = this.input[this.pos + 1];
+                const start = this.pos;
+                this.pos += 2; // skip prefix and quote
+                let value = '';
+                while (this.pos < this.input.length && this.input[this.pos] !== quote) {
+                    value += this.input[this.pos++];
+                }
+                this.pos++; // skip closing quote
+                tokens.push({ type: 'STRING', value: `${prefix}${value}`, start });
+                continue;
+            }
+
             if (/[a-zA-Z_]/.test(char)) {
                 const start = this.pos;
                 let value = '';
                 while (this.pos < this.input.length && /[a-zA-Z0-9_]/.test(this.input[this.pos])) {
                     value += this.input[this.pos++];
                 }
-                const keywords = ['print', 'if', 'else', 'while', 'for', 'def', 'return', 'and', 'or', 'not', 'True', 'False', 'in'];
+                const keywords = ['print', 'if', 'else', 'while', 'for', 'def', 'return', 'and', 'or', 'not', 'True', 'False', 'in', 'class', 'import', 'from', 'as', 'pass', 'break', 'continue', 'try', 'except', 'finally', 'with', 'None', 'self', 'super'];
                 const type = keywords.includes(value) ? 'KEYWORD' : 'IDENTIFIER';
                 if (value === 'True' || value === 'False') tokens.push({ type: 'BOOLEAN', value, start });
                 else tokens.push({ type, value, start });
@@ -96,7 +111,7 @@ export class Lexer {
                 continue;
             }
 
-            if (['(', ')', '[', ']', '{', '}', ':', ','].includes(char)) {
+            if (['(', ')', '[', ']', '{', '}', ':', ',', '.'].includes(char)) {
                 tokens.push({ type: 'PUNCTUATION', value: char, start: this.pos++ });
                 continue;
             }

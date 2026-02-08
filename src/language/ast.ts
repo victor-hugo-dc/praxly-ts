@@ -1,7 +1,9 @@
 export type NodeType =
     | 'Program' | 'Block' | 'Assignment' | 'Print' | 'If' | 'While' | 'For'
     | 'FunctionDeclaration' | 'Return' | 'BinaryExpression' | 'UnaryExpression'
-    | 'Identifier' | 'Literal' | 'ArrayLiteral' | 'CallExpression' | 'ExpressionStatement';
+    | 'Identifier' | 'Literal' | 'ArrayLiteral' | 'CallExpression' | 'ExpressionStatement'
+    | 'ClassDeclaration' | 'FieldDeclaration' | 'Constructor' | 'MethodDeclaration'
+    | 'NewExpression' | 'MemberExpression' | 'ThisExpression' | 'Parameter';
 
 export interface ASTNode {
     id: string;
@@ -20,7 +22,8 @@ export interface Block extends ASTNode {
 }
 
 export type Statement =
-    | Assignment | Print | If | While | For | FunctionDeclaration | Return | ExpressionStatement;
+    | Assignment | Print | If | While | For | FunctionDeclaration | Return | ExpressionStatement
+    | ClassDeclaration | FieldDeclaration | Constructor | MethodDeclaration;
 
 export interface ExpressionStatement extends ASTNode {
     type: 'ExpressionStatement';
@@ -71,7 +74,8 @@ export interface Return extends ASTNode {
 }
 
 export type Expression =
-    | BinaryExpression | UnaryExpression | Identifier | Literal | ArrayLiteral | CallExpression;
+    | BinaryExpression | UnaryExpression | Identifier | Literal | ArrayLiteral | CallExpression
+    | NewExpression | MemberExpression | ThisExpression;
 
 export interface BinaryExpression extends ASTNode {
     type: 'BinaryExpression';
@@ -88,7 +92,7 @@ export interface UnaryExpression extends ASTNode {
 
 export interface CallExpression extends ASTNode {
     type: 'CallExpression';
-    callee: Identifier;
+    callee: Identifier | MemberExpression;
     arguments: Expression[];
 }
 
@@ -106,6 +110,65 @@ export interface Literal extends ASTNode {
 export interface ArrayLiteral extends ASTNode {
     type: 'ArrayLiteral';
     elements: Expression[];
+}
+
+// OOP-related nodes
+export type AccessModifier = 'public' | 'private' | 'protected';
+
+export interface ClassDeclaration extends ASTNode {
+    type: 'ClassDeclaration';
+    name: string;
+    superClass?: Identifier;
+    body: (FieldDeclaration | Constructor | MethodDeclaration)[];
+}
+
+export interface FieldDeclaration extends ASTNode {
+    type: 'FieldDeclaration';
+    name: string;
+    fieldType: string;
+    isStatic: boolean;
+    access: AccessModifier;
+    initializer?: Expression;
+}
+
+export interface Constructor extends ASTNode {
+    type: 'Constructor';
+    access: AccessModifier;
+    params: Parameter[];
+    body: Block;
+}
+
+export interface Parameter extends ASTNode {
+    type: 'Parameter';
+    name: string;
+    paramType: string;
+}
+
+export interface MethodDeclaration extends ASTNode {
+    type: 'MethodDeclaration';
+    name: string;
+    access: AccessModifier;
+    isStatic: boolean;
+    returnType: string;
+    params: Parameter[];
+    body: Block;
+}
+
+export interface NewExpression extends ASTNode {
+    type: 'NewExpression';
+    className: string;
+    arguments: Expression[];
+}
+
+export interface MemberExpression extends ASTNode {
+    type: 'MemberExpression';
+    object: Expression;
+    property: Identifier;
+    isMethod: boolean;
+}
+
+export interface ThisExpression extends ASTNode {
+    type: 'ThisExpression';
 }
 
 export const generateId = () => Math.random().toString(36).substr(2, 9);
