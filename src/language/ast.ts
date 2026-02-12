@@ -1,8 +1,6 @@
 export type NodeType =
     | 'Program' | 'Block' | 'Assignment' | 'Print' | 'If' | 'While' | 'For'
-    | 'FunctionDeclaration' | 'ClassDeclaration' | 'FieldDeclaration' | 'Constructor' | 'Return'
-    | 'BinaryExpression' | 'UnaryExpression' | 'Identifier' | 'Literal'
-    | 'ArrayLiteral' | 'CallExpression' | 'ExpressionStatement' | 'MemberExpression' | 'FunctionDeclaration' | 'Return' | 'BinaryExpression' | 'UnaryExpression'
+    | 'FunctionDeclaration' | 'Return' | 'BinaryExpression' | 'UnaryExpression'
     | 'Identifier' | 'Literal' | 'ArrayLiteral' | 'CallExpression' | 'ExpressionStatement'
     | 'ClassDeclaration' | 'FieldDeclaration' | 'Constructor' | 'MethodDeclaration'
     | 'NewExpression' | 'MemberExpression' | 'ThisExpression' | 'Parameter';
@@ -24,16 +22,12 @@ export interface Block extends ASTNode {
 }
 
 export type Statement =
-    | Assignment | Print | If | While | For
-    | ClassDeclaration | FieldDeclaration | Constructor | Return | ExpressionStatement;
+    | Assignment | Print | If | While | For | FunctionDeclaration | Return | ExpressionStatement
+    | ClassDeclaration | FieldDeclaration | Constructor | MethodDeclaration;
 
-export interface FieldDeclaration extends ASTNode {
-    type: 'FieldDeclaration';
-    name: string;
-    value?: Expression;
-    access: 'public' | 'private' | 'protected';
-    isStatic: boolean;
-    varType?: string;
+export interface ExpressionStatement extends ASTNode {
+    type: 'ExpressionStatement';
+    expression: Expression;
 }
 
 export interface Assignment extends ASTNode {
@@ -79,20 +73,9 @@ export interface Return extends ASTNode {
     value?: Expression;
 }
 
-export interface ExpressionStatement extends ASTNode {
-    type: 'ExpressionStatement';
-    expression: Expression;
-}
-
 export type Expression =
-    | BinaryExpression | UnaryExpression | Identifier | Literal
-    | ArrayLiteral | CallExpression | MemberExpression | NewExpression | ThisExpression;
-
-export interface MemberExpression extends ASTNode {
-    type: 'MemberExpression';
-    object: Expression;
-    property: Identifier;
-}
+    | BinaryExpression | UnaryExpression | Identifier | Literal | ArrayLiteral | CallExpression
+    | NewExpression | MemberExpression | ThisExpression;
 
 export interface BinaryExpression extends ASTNode {
     type: 'BinaryExpression';
@@ -109,7 +92,7 @@ export interface UnaryExpression extends ASTNode {
 
 export interface CallExpression extends ASTNode {
     type: 'CallExpression';
-    callee: Expression;
+    callee: Identifier | MemberExpression;
     arguments: Expression[];
 }
 
