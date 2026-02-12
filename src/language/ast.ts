@@ -36,12 +36,6 @@ export interface FieldDeclaration extends ASTNode {
     varType?: string;
 }
 
-export interface Constructor extends ASTNode {
-    type: 'Constructor';
-    params: Identifier[];
-    body: Block;
-}
-
 export interface Assignment extends ASTNode {
     type: 'Assignment';
     name: string;
@@ -92,7 +86,7 @@ export interface ExpressionStatement extends ASTNode {
 
 export type Expression =
     | BinaryExpression | UnaryExpression | Identifier | Literal
-    | ArrayLiteral | CallExpression | MemberExpression;
+    | ArrayLiteral | CallExpression | MemberExpression | NewExpression | ThisExpression;
 
 export interface MemberExpression extends ASTNode {
     type: 'MemberExpression';
@@ -157,7 +151,7 @@ export interface FieldDeclaration extends ASTNode {
 export interface Constructor extends ASTNode {
     type: 'Constructor';
     access: AccessModifier;
-    params: Identifier[];
+    params: Parameter[];
     body: Block;
 }
 

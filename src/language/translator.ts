@@ -1,9 +1,6 @@
 import type { 
     Program, Statement, Expression, Block, 
-    ClassDeclaration, FunctionDeclaration, FieldDeclaration, 
-    Constructor, BinaryExpression, MemberExpression, CallExpression,
-    Identifier, Literal, UnaryExpression, If, While, For, Return, Print, 
-    ExpressionStatement, ArrayLiteral, MethodDeclaration, Parameter, NewExpression
+    ClassDeclaration, MethodDeclaration
 } from './ast';
 
 export type TargetLanguage = 'java' | 'python' | 'csp';
@@ -76,7 +73,6 @@ class GlobalAnalysis {
                 case 'FieldDeclaration':
                     this.symbolTable.set(stmt.name, this.inferType(stmt.value! || (stmt as any).initializer));
                     break;
-                case 'FunctionDeclaration':
                 case 'MethodDeclaration' as any:
                     const decl = stmt as any;
                     const ret = this.inferReturnType(decl.body);
@@ -182,7 +178,10 @@ class GlobalAnalysis {
 abstract class BaseEmitter {
     protected output: string[] = [];
     protected indentLevel = 0;
-    constructor(protected context: TranslationContext) {}
+    protected context: TranslationContext;
+    constructor(context: TranslationContext) {
+        this.context = context;
+    }
     abstract emit(program: Program): string;
     protected add(s: string) { this.output.push('  '.repeat(this.indentLevel) + s); }
     protected indent() { this.indentLevel++; }
@@ -198,8 +197,7 @@ class JavaEmitter extends BaseEmitter {
         
         const mainClass = program.body.find(s => s.type === 'ClassDeclaration' && s.name === 'Main') as ClassDeclaration | undefined;
         const otherClasses = program.body.filter(s => s.type === 'ClassDeclaration' && s.name !== 'Main') as ClassDeclaration[];
-        const scriptFunctions = program.body.filter(s => s.type === 'FunctionDeclaration') as FunctionDeclaration[];
-        const scriptCode = program.body.filter(s => s.type !== 'FunctionDeclaration' && s.type !== 'ClassDeclaration');
+        const scriptCode = program.body.filter(s => s.type !== 'ClassDeclaration');
 
         this.add("public class Main {");
         this.indent();
@@ -214,11 +212,6 @@ class JavaEmitter extends BaseEmitter {
                 }
             });
         }
-
-        scriptFunctions.forEach(fn => {
-            this.visitFunction(fn);
-            this.output.push(""); 
-        });
 
         otherClasses.forEach(cls => {
             this.visitClass(cls);
@@ -249,41 +242,16 @@ class JavaEmitter extends BaseEmitter {
         this.add("}");
     }
 
-    private visitFunction(node: FunctionDeclaration | MethodDeclaration) {
-        const sig = this.context.functionSignatures.get(node.name);
-        const params = node.params.map((p, i) => {
-            const type = (p as any).paramType || sig?.paramTypes[i] || 'Object';
-            return `${type} ${p.name}`;
-        }).join(', ');
-        
-        const returnType = (node as any).returnType || sig?.returnType || 'void';
-        const access = (node as any).access || 'public';
-        const isStatic = (node as any).isStatic ?? true;
-
-        this.add(`${access} ${isStatic ? 'static ' : ''}${returnType} ${node.name}(${params}) {`);
-        this.indent();
-        
-        const oldLocals = new Set(this.declaredLocals);
-        this.declaredLocals.clear();
-        node.params.forEach(p => this.declaredLocals.add(p.name));
-        
-        node.body.body.forEach(s => this.visitStatement(s as any));
-        
-        this.declaredLocals = oldLocals;
-        this.dedent();
-        this.add("}");
-    }
-
     private visitStatement(node: Statement) {
         switch (node.type) {
             case 'Assignment':
-                const cleanName = node.name.replace(/^unknown\./, "");
+                const cleanName = (node as any).name.replace(/^unknown\./, "");
                 const isField = cleanName.includes('.');
-                const type = this.context.symbolTable.get(node.name) || 'var';
-                const isRedeclare = !isField && !this.declaredLocals.has(node.name);
-                if (isRedeclare) this.declaredLocals.add(node.name);
+                const type = this.context.symbolTable.get((node as any).name) || 'var';
+                const isRedeclare = !isField && !this.declaredLocals.has((node as any).name);
+                if (isRedeclare) this.declaredLocals.add((node as any).name);
                 const prefix = isRedeclare ? `${type} ` : "";
-                this.add(`${prefix}${cleanName.replace(/^self\./, "this.")} = ${this.genExpr(node.value)};`);
+                this.add(`${prefix}${cleanName.replace(/^self\./, "this.")} = ${this.genExpr((node as any).value)};`);
                 break;
             case 'FieldDeclaration':
                 const fType = (node as any).fieldType || this.context.symbolTable.get(node.name) || 'Object';
@@ -332,9 +300,30 @@ class JavaEmitter extends BaseEmitter {
                 this.dedent();
                 this.add("}");
                 break;
-            case 'FunctionDeclaration':
             case 'MethodDeclaration' as any:
-                this.visitFunction(node as any);
+                const methodNode = node as any;
+                const sig = this.context.functionSignatures.get(methodNode.name);
+                const methodParams = methodNode.params.map((p: any, i: any) => {
+                    const type = (p as any).paramType || sig?.paramTypes[i] || 'Object';
+                    return `${type} ${p.name}`;
+                }).join(', ');
+                
+                const returnType = methodNode.returnType || sig?.returnType || 'void';
+                const access = methodNode.access || 'public';
+                const isStatic = methodNode.isStatic ?? true;
+
+                this.add(`${access} ${isStatic ? 'static ' : ''}${returnType} ${methodNode.name}(${methodParams}) {`);
+                this.indent();
+                
+                const oldLocals = new Set(this.declaredLocals);
+                this.declaredLocals.clear();
+                methodNode.params.forEach((p: any) => this.declaredLocals.add(p.name));
+                
+                methodNode.body.body.forEach((s: any) => this.visitStatement(s as any));
+                
+                this.declaredLocals = oldLocals;
+                this.dedent();
+                this.add("}");
                 break;
         }
     }
@@ -382,7 +371,7 @@ class PythonEmitter extends BaseEmitter {
             case 'ClassDeclaration':
                 if (node.name === 'Main') {
                     node.body.forEach(member => {
-                        if ((member.type === 'FunctionDeclaration' || member.type === ('MethodDeclaration' as any)) && (member as any).name === 'main') {
+                        if ((member.type === 'MethodDeclaration') && (member as any).name === 'main') {
                             (member as any).body.body.forEach((s: any) => this.visitStatement(s));
                         } else {
                             this.visitStatement(member as any);
@@ -392,7 +381,11 @@ class PythonEmitter extends BaseEmitter {
                     this.add(`class ${node.name}:`);
                     this.indent();
                     if (node.body.length === 0) this.add("pass");
-                    else node.body.forEach(m => this.visitStatement(m as any));
+                    else node.body.forEach(m => {
+                        if (m.type === 'MethodDeclaration' || m.type === 'Constructor') {
+                            this.visitStatement(m as any);
+                        }
+                    });
                     this.dedent();
                 }
                 break;
@@ -407,14 +400,13 @@ class PythonEmitter extends BaseEmitter {
                 const target = node.name.replace(/^unknown\./, "").replace(/^this\./, "self.");
                 this.add(`${target} = ${this.genExpr(node.value! || (node as any).initializer)}`);
                 break;
-            case 'FunctionDeclaration':
             case 'MethodDeclaration' as any:
                 const isStatic = (node as any).isStatic;
-                const params = isStatic ? node.params.map(p => p.name) : ['self', ...node.params.map(p => p.name)];
-                this.add(`def ${node.name}(${params.join(', ')}):`);
+                const params = isStatic ? (node as any).params.map((p: any) => p.name) : ['self', ...(node as any).params.map((p: any) => p.name)];
+                this.add(`def ${(node as any).name}(${params.join(', ')}):`);
                 this.indent();
-                if (node.body.body.length === 0) this.add("pass");
-                else node.body.body.forEach(s => this.visitStatement(s as any));
+                if ((node as any).body.body.length === 0) this.add("pass");
+                else (node as any).body.body.forEach((s: any) => this.visitStatement(s as any));
                 this.dedent();
                 break;
             case 'Print':
@@ -482,7 +474,7 @@ class CSPEmitter extends BaseEmitter {
             case 'ClassDeclaration':
                 if (node.name === 'Main') {
                     node.body.forEach(member => {
-                        if ((member.type === 'FunctionDeclaration' || member.type === ('MethodDeclaration' as any)) && (member as any).name === 'main') {
+                        if ((member.type === ('MethodDeclaration' as any)) && (member as any).name === 'main') {
                             (member as any).body.body.forEach((s: any) => this.visitStatement(s));
                         } else {
                             this.visitStatement(member as any);
@@ -490,7 +482,11 @@ class CSPEmitter extends BaseEmitter {
                     });
                 } else {
                     this.add(`// Class ${node.name}`);
-                    node.body.forEach(m => this.visitStatement(m as any));
+                    node.body.forEach(m => {
+                        if (m.type === 'MethodDeclaration' || m.type === 'Constructor') {
+                            this.visitStatement(m as any);
+                        }
+                    });
                 }
                 break;
             case 'Assignment':
@@ -501,14 +497,13 @@ class CSPEmitter extends BaseEmitter {
             case 'Print':
                 this.add(`DISPLAY(${this.genExpr(node.expression)})`);
                 break;
-            case 'FunctionDeclaration':
             case 'MethodDeclaration' as any:
             case 'Constructor':
-                const name = node.type === 'Constructor' ? 'Init' : node.name;
-                this.add(`PROCEDURE ${name} (${node.params.map(p => p.name).join(', ')})`);
+                const name = node.type === 'Constructor' ? 'Init' : (node as any).name;
+                this.add(`PROCEDURE ${name} (${(node as any).params.map((p: any) => p.name).join(', ')})`);
                 this.add("{");
                 this.indent();
-                node.body.body.forEach(s => this.visitStatement(s as any));
+                (node as any).body.body.forEach((s: any) => this.visitStatement(s as any));
                 this.dedent();
                 this.add("}");
                 break;

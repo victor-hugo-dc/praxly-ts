@@ -345,7 +345,7 @@ export class JavaParser {
             do { args.push(this.expression()); } while (this.match('PUNCTUATION', ','));
         }
         this.consume('PUNCTUATION', ')');
-        return { id: generateId(), type: 'NewExpression', className, arguments: args };
+        return { id: generateId(), type: 'CallExpression', callee: { id: generateId(), type: 'Identifier', name: className }, arguments: args };
     }
 
     private postfix(): Expression {
@@ -395,7 +395,7 @@ export class JavaParser {
         if (this.match('STRING')) return { id: generateId(), type: 'Literal', value: this.previous().value, raw: `"${this.previous().value}"` };
         if (this.match('BOOLEAN')) return { id: generateId(), type: 'Literal', value: this.previous().value === 'true', raw: this.previous().value };
         if (this.match('KEYWORD', 'null')) return { id: generateId(), type: 'Literal', value: null, raw: 'null' };
-        if (this.match('KEYWORD', 'this')) return { id: generateId(), type: 'ThisExpression' };
+        if (this.match('KEYWORD', 'this')) return { id: generateId(), type: 'Identifier', name: 'this' };
         if (this.match('IDENTIFIER')) return { id: generateId(), type: 'Identifier', name: this.previous().value };
         if (this.match('PUNCTUATION', '(')) {
             const expr = this.expression();

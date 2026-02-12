@@ -1,7 +1,7 @@
 import type { Token, TokenType } from '../lexer';
 import {
     type Program, type Statement, type Block, type Expression, type Print, type If, type While, type For,
-    type FunctionDeclaration, type Return, type CallExpression, type Identifier, type ClassDeclaration, type FieldDeclaration,
+    type Return, type CallExpression, type Identifier, type ClassDeclaration, type FieldDeclaration,
     type Constructor, type MethodDeclaration, type Parameter,
     generateId
 } from '../ast';
@@ -156,7 +156,6 @@ export class Parser {
         if (this.check('KEYWORD', 'if')) return this.ifStatement();
         if (this.check('KEYWORD', 'while')) return this.whileStatement();
         if (this.check('KEYWORD', 'for')) return this.forStatement();
-        if (this.check('KEYWORD', 'def')) return this.functionDeclaration();
         if (this.check('KEYWORD', 'return')) return this.returnStatement();
 
         // Parse expression and check if it's an assignment
@@ -237,29 +236,6 @@ export class Parser {
         const iterable = this.expression();
         const body = this.block();
         return { id: generateId(), type: 'For', variable, iterable, body };
-    }
-
-    private functionDeclaration(): FunctionDeclaration {
-        this.consume('KEYWORD', 'def');
-        const rawName = this.consume('IDENTIFIER').value;
-        const name = this.convertMagicMethodName(rawName);
-        this.consume('PUNCTUATION', '(');
-        const params: Identifier[] = [];
-        if (!this.check('PUNCTUATION', ')')) {
-            do {
-                // Allow both IDENTIFIER and 'self' keyword as parameter names
-                let paramName: string;
-                if (this.check('KEYWORD', 'self')) {
-                    paramName = this.advance().value;
-                } else {
-                    paramName = this.consume('IDENTIFIER').value;
-                }
-                params.push({ id: generateId(), type: 'Identifier', name: paramName });
-            } while (this.match('PUNCTUATION', ','));
-        }
-        this.consume('PUNCTUATION', ')');
-        const body = this.block();
-        return { id: generateId(), type: 'FunctionDeclaration', name, params, body };
     }
 
     private returnStatement(): Return {
@@ -402,7 +378,7 @@ export class Parser {
         if (this.match('STRING')) return { id: generateId(), type: 'Literal', value: this.previous().value, raw: `"${this.previous().value}"` };
         if (this.match('BOOLEAN')) return { id: generateId(), type: 'Literal', value: this.previous().value === 'True', raw: this.previous().value };
         if (this.match('KEYWORD', 'None')) return { id: generateId(), type: 'Literal', value: null, raw: 'None' };
-        if (this.match('KEYWORD', 'self')) return { id: generateId(), type: 'ThisExpression' };
+        if (this.match('KEYWORD', 'self')) return { id: generateId(), type: 'Identifier', name: 'self' };
         if (this.match('IDENTIFIER')) return { id: generateId(), type: 'Identifier', name: this.previous().value };
         if (this.match('PUNCTUATION', '[')) {
             const elements: Expression[] = [];

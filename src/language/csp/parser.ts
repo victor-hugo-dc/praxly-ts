@@ -1,5 +1,5 @@
 import type { Token, TokenType } from '../lexer';
-import { type Program, type Statement, type Block, type Expression, type If, type While, type For, type FunctionDeclaration, type Return, type CallExpression, type Identifier, type UnaryExpression, type ClassDeclaration, type FieldDeclaration, type Constructor, type MethodDeclaration, type Parameter, type AccessModifier, generateId } from '../ast';
+import { type Program, type Statement, type Block, type Expression, type If, type While, type For, type Return, type CallExpression, type Identifier, type UnaryExpression, type ClassDeclaration, type FieldDeclaration, type Constructor, type MethodDeclaration, type Parameter, type AccessModifier, generateId } from '../ast';
 
 export class CSPParser {
     private tokens: Token[];
@@ -117,7 +117,6 @@ export class CSPParser {
         if (this.check('KEYWORD', 'IF')) return this.ifStatement();
         if (this.check('KEYWORD', 'REPEAT')) return this.repeatStatement();
         if (this.check('KEYWORD', 'FOR')) return this.forStatement();
-        if (this.check('KEYWORD', 'PROCEDURE')) return this.procedureStatement();
         if (this.check('KEYWORD', 'RETURN')) return this.returnStatement();
         if (this.check('KEYWORD', 'DISPLAY')) return this.printStatement();
 
@@ -190,22 +189,6 @@ export class CSPParser {
         const iterable = this.expression();
         const body = this.block();
         return { id: generateId(), type: 'For', variable, iterable, body };
-    }
-
-    private procedureStatement(): FunctionDeclaration {
-        this.consume('KEYWORD', 'PROCEDURE');
-        const name = this.consume('IDENTIFIER').value;
-        this.consume('PUNCTUATION', '(');
-        const params: Identifier[] = [];
-        if (!this.check('PUNCTUATION', ')')) {
-            do {
-                const pName = this.consume('IDENTIFIER').value;
-                params.push({ id: generateId(), type: 'Identifier', name: pName });
-            } while (this.match('PUNCTUATION', ','));
-        }
-        this.consume('PUNCTUATION', ')');
-        const body = this.block();
-        return { id: generateId(), type: 'FunctionDeclaration', name, params, body };
     }
 
     private returnStatement(): Return {
