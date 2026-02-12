@@ -1,837 +1,570 @@
-import type { Program, Statement, Expression, Block, ClassDeclaration, MethodDeclaration, FieldDeclaration, Constructor } from './ast';
-
-// --- Types & Interfaces ---
+import type { 
+    Program, Statement, Expression, Block, 
+    ClassDeclaration, FunctionDeclaration, FieldDeclaration, 
+    Constructor, BinaryExpression, MemberExpression, CallExpression,
+    Identifier, Literal, UnaryExpression, If, While, For, Return, Print, 
+    ExpressionStatement, ArrayLiteral, MethodDeclaration, Parameter, NewExpression
+} from './ast';
 
 export type TargetLanguage = 'java' | 'python' | 'csp';
 
 interface TranslationContext {
-    symbolTable: SymbolTable;
-    functionReturnTypes: Map<string, string>;
-    functionParamTypes: Map<string, string[]>;
+    symbolTable: Map<string, string>;
+    functionSignatures: Map<string, { returnType: string, paramTypes: string[] }>;
+    classNames: Set<string>;
+    currentClassName?: string;
 }
 
-// --- Symbol Table & Precedence ---
+/**
+ * RECONCILED TRANSLATOR
+ * Merges the OOP features of the original Praxly with the modern TypeScript architecture.
+ * Supports Classes, Methods, Constructors, and robust Type Inference.
+ */
+export class Translator {
+    translate(program: Program, targetLang: TargetLanguage): string {
+        // Pass 1: Global Analysis (Type Inference & Signature Mapping)
+        const analyzer = new GlobalAnalysis();
+        const context = analyzer.analyze(program);
 
-class SymbolTable {
-    private scopes: Map<string, string>[] = [new Map()];
+        let emitter: BaseEmitter;
+        switch (targetLang) {
+            case 'java': emitter = new JavaEmitter(context); break;
+            case 'python': emitter = new PythonEmitter(context); break;
+            case 'csp': emitter = new CSPEmitter(context); break;
+            default: return "// Unsupported Language";
+        }
 
-    enterScope() {
-        this.scopes.push(new Map());
+        return emitter.emit(program);
+    }
+}
+
+/**
+ * Analysis pass to determine types and signatures before code generation.
+ */
+class GlobalAnalysis {
+    private symbolTable = new Map<string, string>();
+    private functionSignatures = new Map<string, { returnType: string, paramTypes: string[] }>;
+    private classNames = new Set<string>();
+
+    analyze(program: Program): TranslationContext {
+        // Collect class names
+        program.body.forEach(node => {
+            if (node.type === 'ClassDeclaration') this.classNames.add(node.name);
+        });
+
+        // First pass: identify variables and function/method returns
+        this.visitBlock(program.body);
+
+        // Second pass: infer parameter types from call sites
+        this.resolveCalls(program);
+
+        return {
+            symbolTable: this.symbolTable,
+            functionSignatures: this.functionSignatures,
+            classNames: this.classNames
+        };
     }
 
-    exitScope() {
-        this.scopes.pop();
+    private visitBlock(body: Statement[]) {
+        if (!body) return;
+        body.forEach(stmt => {
+            if (!stmt) return;
+            switch (stmt.type) {
+                case 'Assignment':
+                    this.symbolTable.set(stmt.name, this.inferType(stmt.value));
+                    break;
+                case 'FieldDeclaration':
+                    this.symbolTable.set(stmt.name, this.inferType(stmt.value! || (stmt as any).initializer));
+                    break;
+                case 'FunctionDeclaration':
+                case 'MethodDeclaration' as any:
+                    const decl = stmt as any;
+                    const ret = this.inferReturnType(decl.body);
+                    this.functionSignatures.set(decl.name, { returnType: ret, paramTypes: [] });
+                    this.visitBlock(decl.body.body);
+                    break;
+                case 'Constructor' as any:
+                    this.visitBlock((stmt as any).body.body);
+                    break;
+                case 'ClassDeclaration':
+                    stmt.body.forEach((member: any) => {
+                        this.visitBlock([member]);
+                    });
+                    break;
+                case 'If':
+                    this.visitBlock(stmt.thenBranch.body);
+                    if (stmt.elseBranch) this.visitBlock(stmt.elseBranch.body);
+                    break;
+                case 'While':
+                case 'For':
+                    this.visitBlock(stmt.body.body);
+                    break;
+            }
+        });
     }
 
-    set(name: string, type: string) {
-        this.scopes[this.scopes.length - 1].set(name, type);
-    }
-
-    get(name: string): string | undefined {
-        for (let i = this.scopes.length - 1; i >= 0; i--) {
-            if (this.scopes[i].has(name)) {
-                return this.scopes[i].get(name);
+    private inferReturnType(block: Block): string {
+        for (const s of block.body) {
+            if (s.type === 'Return') {
+                return s.value ? this.inferType(s.value) : 'void';
+            }
+            if (s.type === 'If') {
+                const tr = this.inferReturnType(s.thenBranch);
+                if (tr !== 'void') return tr;
+                if (s.elseBranch) {
+                    const er = this.inferReturnType(s.elseBranch);
+                    if (er !== 'void') return er;
+                }
+            }
+            if (s.type === 'While' || (s.type as any) === 'For') {
+                const lr = this.inferReturnType((s as any).body);
+                if (lr !== 'void') return lr;
             }
         }
-        return undefined;
+        return 'void';
     }
 
-    hasInCurrentScope(name: string): boolean {
-        return this.scopes[this.scopes.length - 1].has(name);
+    private resolveCalls(node: any) {
+        if (!node || typeof node !== 'object') return;
+        
+        if (node.type === 'CallExpression') {
+            const callee = node.callee;
+            const calleeName = callee.type === 'Identifier' ? callee.name : (callee.type === 'MemberExpression' ? callee.property.name : null);
+            if (calleeName) {
+                const sig = this.functionSignatures.get(calleeName);
+                if (sig && sig.paramTypes.length === 0) {
+                    sig.paramTypes = node.arguments.map((arg: Expression) => this.inferType(arg));
+                }
+            }
+        }
+
+        for (const key in node) {
+            const val = node[key];
+            if (Array.isArray(val)) {
+                val.forEach(item => this.resolveCalls(item));
+            } else {
+                this.resolveCalls(val);
+            }
+        }
+    }
+
+    private inferType(expr: Expression): string {
+        if (!expr) return 'Object';
+        switch (expr.type) {
+            case 'Literal':
+                if (typeof expr.value === 'number') return String(expr.raw || '').includes('.') ? 'double' : 'int';
+                if (typeof expr.value === 'boolean') return 'boolean';
+                if (typeof expr.value === 'string') return 'String';
+                return 'Object';
+            case 'Identifier':
+                return this.symbolTable.get(expr.name) || 'Object';
+            case 'CallExpression':
+                const callee = expr.callee;
+                const calleeName = callee.type === 'Identifier' ? callee.name : (callee.type === 'MemberExpression' ? callee.property.name : null);
+                return (calleeName ? this.functionSignatures.get(calleeName)?.returnType : null) || 'Object';
+            case 'BinaryExpression':
+                if (['>', '<', '>=', '<=', '==', '!=', 'and', 'or'].includes(expr.operator)) return 'boolean';
+                const left = this.inferType(expr.left);
+                const right = this.inferType(expr.right);
+                if (left === 'double' || right === 'double') return 'double';
+                if (left === 'String' || right === 'String') return 'String';
+                return 'int';
+            case 'UnaryExpression':
+                if (expr.operator === 'not') return 'boolean';
+                return this.inferType(expr.argument);
+            case 'MemberExpression':
+                return 'Object'; // Basic fallback
+            default: return 'Object';
+        }
     }
 }
 
-const Precedence = {
-    Member: 18, Call: 17, Instantiation: 16, Postfix: 15, Unary: 14,
-    Exponential: 13, Multiplicative: 12, Additive: 11, Shift: 10,
-    Relational: 9, Equality: 8, BitwiseAnd: 7, Xor: 6, BitwiseOr: 5,
-    LogicalAnd: 4, LogicalOr: 3, Assignment: 2, Sequence: 1
-};
-
-// --- Abstract Visitor Pattern ---
-
-abstract class ASTVisitor {
+abstract class BaseEmitter {
     protected output: string[] = [];
     protected indentLevel = 0;
-    protected context: TranslationContext;
+    constructor(protected context: TranslationContext) {}
+    abstract emit(program: Program): string;
+    protected add(s: string) { this.output.push('  '.repeat(this.indentLevel) + s); }
+    protected indent() { this.indentLevel++; }
+    protected dedent() { this.indentLevel--; }
+}
 
-    constructor(context: TranslationContext) {
-        this.context = context;
+class JavaEmitter extends BaseEmitter {
+    private declaredLocals = new Set<string>();
+
+    emit(program: Program): string {
+        this.output = [];
+        this.declaredLocals.clear();
+        
+        const mainClass = program.body.find(s => s.type === 'ClassDeclaration' && s.name === 'Main') as ClassDeclaration | undefined;
+        const otherClasses = program.body.filter(s => s.type === 'ClassDeclaration' && s.name !== 'Main') as ClassDeclaration[];
+        const scriptFunctions = program.body.filter(s => s.type === 'FunctionDeclaration') as FunctionDeclaration[];
+        const scriptCode = program.body.filter(s => s.type !== 'FunctionDeclaration' && s.type !== 'ClassDeclaration');
+
+        this.add("public class Main {");
+        this.indent();
+
+        if (mainClass) {
+            mainClass.body.forEach(member => {
+                if (member.type === ('MethodDeclaration' as any) && (member as any).name === 'main') {
+                    // Handled in main entry point
+                } else {
+                    this.visitStatement(member as any);
+                    this.output.push("");
+                }
+            });
+        }
+
+        scriptFunctions.forEach(fn => {
+            this.visitFunction(fn);
+            this.output.push(""); 
+        });
+
+        otherClasses.forEach(cls => {
+            this.visitClass(cls);
+            this.output.push("");
+        });
+
+        const sourceMain = mainClass?.body.find(m => m.type === ('MethodDeclaration' as any) && (m as any).name === 'main') as MethodDeclaration | undefined;
+        if (scriptCode.length > 0 || sourceMain) {
+            this.add("public static void main(String[] args) {");
+            this.indent();
+            this.declaredLocals.clear();
+            if (sourceMain) sourceMain.body.body.forEach(s => this.visitStatement(s as any));
+            scriptCode.forEach(s => this.visitStatement(s));
+            this.dedent();
+            this.add("}");
+        }
+
+        this.dedent();
+        this.add("}");
+        return this.output.join('\n').replace(/\n\n\n+/g, '\n\n');
     }
 
-    getGeneratedCode(): string {
+    private visitClass(node: ClassDeclaration) {
+        this.add(`public static class ${node.name} {`);
+        this.indent();
+        node.body.forEach(member => this.visitStatement(member as any));
+        this.dedent();
+        this.add("}");
+    }
+
+    private visitFunction(node: FunctionDeclaration | MethodDeclaration) {
+        const sig = this.context.functionSignatures.get(node.name);
+        const params = node.params.map((p, i) => {
+            const type = (p as any).paramType || sig?.paramTypes[i] || 'Object';
+            return `${type} ${p.name}`;
+        }).join(', ');
+        
+        const returnType = (node as any).returnType || sig?.returnType || 'void';
+        const access = (node as any).access || 'public';
+        const isStatic = (node as any).isStatic ?? true;
+
+        this.add(`${access} ${isStatic ? 'static ' : ''}${returnType} ${node.name}(${params}) {`);
+        this.indent();
+        
+        const oldLocals = new Set(this.declaredLocals);
+        this.declaredLocals.clear();
+        node.params.forEach(p => this.declaredLocals.add(p.name));
+        
+        node.body.body.forEach(s => this.visitStatement(s as any));
+        
+        this.declaredLocals = oldLocals;
+        this.dedent();
+        this.add("}");
+    }
+
+    private visitStatement(node: Statement) {
+        switch (node.type) {
+            case 'Assignment':
+                const cleanName = node.name.replace(/^unknown\./, "");
+                const isField = cleanName.includes('.');
+                const type = this.context.symbolTable.get(node.name) || 'var';
+                const isRedeclare = !isField && !this.declaredLocals.has(node.name);
+                if (isRedeclare) this.declaredLocals.add(node.name);
+                const prefix = isRedeclare ? `${type} ` : "";
+                this.add(`${prefix}${cleanName.replace(/^self\./, "this.")} = ${this.genExpr(node.value)};`);
+                break;
+            case 'FieldDeclaration':
+                const fType = (node as any).fieldType || this.context.symbolTable.get(node.name) || 'Object';
+                this.add(`${node.access || 'private'} ${node.isStatic ? 'static ' : ''}${fType} ${node.name} = ${node.value || (node as any).initializer ? this.genExpr(node.value || (node as any).initializer) : 'null'};`);
+                break;
+            case 'Constructor':
+                this.add(`public ${this.context.currentClassName || 'Constructor'}(${node.params.map(p => `Object ${p.name}`).join(', ')}) {`);
+                this.indent();
+                node.body.body.forEach(s => this.visitStatement(s as any));
+                this.dedent();
+                this.add("}");
+                break;
+            case 'Print':
+                this.add(`System.out.println(${this.genExpr(node.expression)});`);
+                break;
+            case 'If':
+                this.add(`if (${this.genExpr(node.condition)}) {`);
+                this.indent();
+                node.thenBranch.body.forEach(s => this.visitStatement(s as any));
+                this.dedent();
+                if (node.elseBranch) {
+                    this.add("} else {");
+                    this.indent();
+                    node.elseBranch.body.forEach(s => this.visitStatement(s as any));
+                    this.dedent();
+                }
+                this.add("}");
+                break;
+            case 'Return':
+                this.add(`return ${node.value ? this.genExpr(node.value) : ''};`);
+                break;
+            case 'ExpressionStatement':
+                this.add(`${this.genExpr(node.expression)};`);
+                break;
+            case 'While':
+                this.add(`while (${this.genExpr(node.condition)}) {`);
+                this.indent();
+                node.body.body.forEach(s => this.visitStatement(s as any));
+                this.dedent();
+                this.add("}");
+                break;
+            case 'For':
+                this.add(`for (${node.variable} : ${this.genExpr(node.iterable)}) {`);
+                this.indent();
+                node.body.body.forEach(s => this.visitStatement(s as any));
+                this.dedent();
+                this.add("}");
+                break;
+            case 'FunctionDeclaration':
+            case 'MethodDeclaration' as any:
+                this.visitFunction(node as any);
+                break;
+        }
+    }
+
+    private genExpr(expr: Expression): string {
+        switch (expr.type) {
+            case 'Literal':
+                if (typeof expr.value === 'boolean') return String(expr.value);
+                return typeof expr.value === 'string' ? `"${expr.value}"` : String(expr.value);
+            case 'Identifier':
+                return expr.name === 'self' ? 'this' : expr.name;
+            case 'BinaryExpression':
+                let op = expr.operator;
+                if (op === 'and') op = '&&';
+                if (op === 'or') op = '||';
+                return `${this.genExpr(expr.left)} ${op} ${this.genExpr(expr.right)}`;
+            case 'CallExpression':
+                const callee = expr.callee;
+                const calleeName = callee.type === 'Identifier' ? callee.name : this.genExpr(callee);
+                const args = expr.arguments.map(a => this.genExpr(a)).join(', ');
+                const isCtor = this.context.classNames.has(calleeName);
+                return `${isCtor ? 'new ' : ''}${calleeName}(${args})`;
+            case 'MemberExpression':
+                return `${this.genExpr(expr.object)}.${expr.property.name}`;
+            case 'UnaryExpression':
+                const uOp = expr.operator === 'not' ? '!' : expr.operator;
+                return `${uOp}${this.genExpr(expr.argument)}`;
+            case 'ArrayLiteral':
+                return `new Object[] {${expr.elements.map(e => this.genExpr(e)).join(', ')}}`;
+            default: return "";
+        }
+    }
+}
+
+/** * PYTHON EMITTER */
+class PythonEmitter extends BaseEmitter {
+    emit(program: Program): string {
+        this.output = [];
+        program.body.forEach(s => this.visitStatement(s));
         return this.output.join('\n');
     }
 
-    protected emit(line: string) {
-        this.output.push('  '.repeat(this.indentLevel) + line);
-    }
-    protected indent() { this.indentLevel++; }
-    protected dedent() { this.indentLevel--; }
-
-    // -- Visit Methods (To be implemented by concrete emitters) --
-
-    abstract visitProgram(program: Program): void;
-    abstract visitBlock(block: Block): void;
-    abstract visitClassDeclaration(classDecl: ClassDeclaration): void;
-    abstract visitMethodDeclaration(method: MethodDeclaration): void;
-    abstract visitFieldDeclaration(field: FieldDeclaration): void;
-    abstract visitConstructor(ctor: Constructor): void;
-
-    // Statements
-    abstract visitPrint(stmt: any): void;
-    abstract visitAssignment(stmt: any): void;
-    abstract visitIf(stmt: any): void;
-    abstract visitWhile(stmt: any): void;
-    abstract visitFor(stmt: any): void;
-    abstract visitFunctionDeclaration(stmt: any): void;
-    abstract visitReturn(stmt: any): void;
-    abstract visitExpressionStatement(stmt: any): void;
-
-    // Expressions (These return strings usually, but we keep it void here for the structure, helper methods do string gen)
-    abstract generateExpression(expr: Expression, parentPrecedence: number): string;
-
-    // Dispatcher
-    visitStatement(stmt: Statement) {
-        switch (stmt.type) {
-            case 'Print': this.visitPrint(stmt); break;
-            case 'Assignment': this.visitAssignment(stmt); break;
-            case 'If': this.visitIf(stmt); break;
-            case 'While': this.visitWhile(stmt); break;
-            case 'For': this.visitFor(stmt); break;
-            case 'FunctionDeclaration': this.visitFunctionDeclaration(stmt); break;
-            case 'Return': this.visitReturn(stmt); break;
-            case 'ExpressionStatement': this.visitExpressionStatement(stmt); break;
-            case 'ClassDeclaration': this.visitClassDeclaration(stmt); break;
-            case 'FieldDeclaration': this.visitFieldDeclaration(stmt); break;
-            case 'Constructor': this.visitConstructor(stmt); break;
-            case 'MethodDeclaration': this.visitMethodDeclaration(stmt); break;
-        }
-    }
-
-    // Type Inference Helper
-    protected inferType(expr: Expression): string {
-        switch (expr.type) {
-            case 'Literal':
-                if (typeof expr.value === 'boolean') return 'boolean';
-                if (typeof expr.value === 'string') return 'String';
-                if (typeof expr.value === 'number') {
-                    if (expr.raw && (expr.raw.includes('.') || expr.raw.toLowerCase().includes('e'))) return 'double';
-                    return 'int';
+    private visitStatement(node: Statement) {
+        switch (node.type) {
+            case 'ClassDeclaration':
+                if (node.name === 'Main') {
+                    node.body.forEach(member => {
+                        if ((member.type === 'FunctionDeclaration' || member.type === ('MethodDeclaration' as any)) && (member as any).name === 'main') {
+                            (member as any).body.body.forEach((s: any) => this.visitStatement(s));
+                        } else {
+                            this.visitStatement(member as any);
+                        }
+                    });
+                } else {
+                    this.add(`class ${node.name}:`);
+                    this.indent();
+                    if (node.body.length === 0) this.add("pass");
+                    else node.body.forEach(m => this.visitStatement(m as any));
+                    this.dedent();
                 }
-                return 'Object';
-            case 'Identifier': return this.context.symbolTable.get(expr.name) || 'var';
-            case 'BinaryExpression':
-                if (['>', '<', '>=', '<=', '==', '!='].includes(expr.operator)) return 'boolean';
-                const left = this.inferType(expr.left);
-                if (left === 'double') return 'double';
-                return 'int';
-            case 'CallExpression':
-                const calleeName = (expr.callee as any).name;
-                if (calleeName && this.context.functionReturnTypes.has(calleeName)) return this.context.functionReturnTypes.get(calleeName)!;
-                return 'var';
-            default: return 'var';
-        }
-    }
-}
-
-// --- Specific Emitters ---
-
-class JavaEmitter extends ASTVisitor {
-    visitProgram(program: Program): void {
-        // Separate classes, functions, and main code
-        const classes = program.body.filter(s => s.type === 'ClassDeclaration');
-        const functions = program.body.filter(s => s.type === 'FunctionDeclaration');
-        const mainBody = program.body.filter(s => s.type !== 'ClassDeclaration' && s.type !== 'FunctionDeclaration');
-
-        // Emit classes first
-        classes.forEach(classDecl => {
-            this.visitClassDeclaration(classDecl as ClassDeclaration);
-            this.emit('');
-        });
-
-        // Emit main class if there's any code to emit
-        if (functions.length > 0 || mainBody.length > 0) {
-            this.context.symbolTable = new SymbolTable();
-            this.emit('public class Main {');
-            this.indent();
-            
-            // Emit functions as static methods
-            functions.forEach(func => {
-                this.visitFunctionDeclaration(func as any);
-                this.emit('');
-            });
-            
-            // Emit main method with remaining code
-            if (mainBody.length > 0) {
-                this.emit('public static void main(String[] args) {');
+                break;
+            case 'Constructor':
+                this.add(`def __init__(self, ${node.params.map(p => p.name).join(', ')}):`);
                 this.indent();
-                mainBody.forEach(stmt => this.visitStatement(stmt));
+                node.body.body.forEach(s => this.visitStatement(s as any));
                 this.dedent();
-                this.emit('}');
-            }
-            
-            this.dedent();
-            this.emit('}');
+                break;
+            case 'Assignment':
+            case 'FieldDeclaration':
+                const target = node.name.replace(/^unknown\./, "").replace(/^this\./, "self.");
+                this.add(`${target} = ${this.genExpr(node.value! || (node as any).initializer)}`);
+                break;
+            case 'FunctionDeclaration':
+            case 'MethodDeclaration' as any:
+                const isStatic = (node as any).isStatic;
+                const params = isStatic ? node.params.map(p => p.name) : ['self', ...node.params.map(p => p.name)];
+                this.add(`def ${node.name}(${params.join(', ')}):`);
+                this.indent();
+                if (node.body.body.length === 0) this.add("pass");
+                else node.body.body.forEach(s => this.visitStatement(s as any));
+                this.dedent();
+                break;
+            case 'Print':
+                this.add(`print(${this.genExpr(node.expression)})`);
+                break;
+            case 'If':
+                this.add(`if ${this.genExpr(node.condition)}:`);
+                this.indent();
+                node.thenBranch.body.forEach(s => this.visitStatement(s as any));
+                this.dedent();
+                if (node.elseBranch) {
+                    this.add("else:");
+                    this.indent();
+                    node.elseBranch.body.forEach(s => this.visitStatement(s as any));
+                    this.dedent();
+                }
+                break;
+            case 'While':
+                this.add(`while ${this.genExpr(node.condition)}:`);
+                this.indent();
+                node.body.body.forEach(s => this.visitStatement(s as any));
+                this.dedent();
+                break;
+            case 'Return':
+                this.add(`return ${node.value ? this.genExpr(node.value) : ''}`);
+                break;
+            case 'ExpressionStatement':
+                this.add(this.genExpr(node.expression));
+                break;
         }
     }
 
-    visitClassDeclaration(classDecl: ClassDeclaration): void {
-        const superClass = classDecl.superClass ? ` extends ${classDecl.superClass.name}` : '';
-        this.emit(`public class ${classDecl.name}${superClass} {`);
-        this.indent();
-
-        // Emit fields and methods
-        classDecl.body.forEach(member => {
-            this.visitStatement(member);
-            this.emit('');
-        });
-
-        this.dedent();
-        this.emit('}');
-    }
-
-    visitFieldDeclaration(field: FieldDeclaration): void {
-        let line = `${field.access} `;
-        if (field.isStatic) line += 'static ';
-        let type = field.fieldType;
-        if (type === 'auto') type = field.initializer ? this.inferType(field.initializer) : 'Object';
-        line += `${type} ${field.name}`;
-        if (field.initializer) {
-            line += ` = ${this.generateExpression(field.initializer, 0)}`;
-        }
-        this.emit(`${line};`);
-    }
-
-    visitConstructor(ctor: Constructor): void {
-        const className = 'TempClass'; // We'll need context for this - for now using placeholder
-        const params = ctor.params.map(p => `${p.paramType} ${p.name}`).join(', ');
-        this.emit(`public ${className}(${params}) {`);
-        this.indent();
-        this.context.symbolTable.enterScope();
-        ctor.params.forEach(p => this.context.symbolTable.set(p.name, p.paramType));
-        this.visitBlock(ctor.body);
-        this.context.symbolTable.exitScope();
-        this.dedent();
-        this.emit('}');
-    }
-
-    visitMethodDeclaration(method: MethodDeclaration): void {
-        let line = `${method.access} `;
-        if (method.isStatic) line += 'static ';
-        let returnType = method.returnType === 'auto' ? 'Object' : method.returnType;
-        line += `${returnType} ${method.name}(`;
-        line += method.params.map(p => `${p.paramType} ${p.name}`).join(', ') + ')';
-        this.emit(`${line} {`);
-        this.indent();
-        this.context.symbolTable.enterScope();
-        method.params.forEach(p => this.context.symbolTable.set(p.name, p.paramType));
-        this.visitBlock(method.body);
-        this.context.symbolTable.exitScope();
-        this.dedent();
-        this.emit('}');
-    }
-
-    visitBlock(block: Block): void {
-        block.body.forEach(stmt => this.visitStatement(stmt));
-    }
-
-    visitPrint(stmt: any): void {
-        this.emit(`System.out.println(${this.generateExpression(stmt.expression, 0)});`);
-    }
-
-    visitAssignment(stmt: any): void {
-        const rVal = this.generateExpression(stmt.value, 0);
-        if (this.context.symbolTable.hasInCurrentScope(stmt.name)) {
-            this.emit(`${stmt.name} = ${rVal};`);
-        } else {
-            let type = this.inferType(stmt.value);
-            if (type === 'var') type = 'Object';
-            this.emit(`${type} ${stmt.name} = ${rVal};`);
-            this.context.symbolTable.set(stmt.name, type);
-        }
-    }
-
-    visitIf(stmt: any): void {
-        this.emit(`if (${this.generateExpression(stmt.condition, 0)}) {`);
-        this.indent();
-        this.context.symbolTable.enterScope();
-        this.visitBlock(stmt.thenBranch);
-        this.context.symbolTable.exitScope();
-        this.dedent();
-        this.emit('}');
-        if (stmt.elseBranch) {
-            this.emit('else {');
-            this.indent();
-            this.context.symbolTable.enterScope();
-            this.visitBlock(stmt.elseBranch);
-            this.context.symbolTable.exitScope();
-            this.dedent();
-            this.emit('}');
-        }
-    }
-
-    visitWhile(stmt: any): void {
-        this.emit(`while (${this.generateExpression(stmt.condition, 0)}) {`);
-        this.indent();
-        this.context.symbolTable.enterScope();
-        this.visitBlock(stmt.body);
-        this.context.symbolTable.exitScope();
-        this.dedent();
-        this.emit('}');
-    }
-
-    visitFor(stmt: any): void {
-        let varType = 'var';
-        const iterType = this.inferType(stmt.iterable);
-        if (iterType.endsWith('[]')) varType = iterType.slice(0, -2);
-
-        this.emit(`for (${varType} ${stmt.variable} : ${this.generateExpression(stmt.iterable, 0)}) {`);
-        this.indent();
-        this.context.symbolTable.enterScope();
-        this.context.symbolTable.set(stmt.variable, varType);
-        this.visitBlock(stmt.body);
-        this.context.symbolTable.exitScope();
-        this.dedent();
-        this.emit('}');
-    }
-
-    visitFunctionDeclaration(stmt: any): void {
-        this.context.symbolTable.enterScope();
-        const paramTypes = this.context.functionParamTypes.get(stmt.name) || [];
-
-        stmt.params.forEach((p: any, i: number) => {
-            let type = paramTypes[i];
-            if (!type || type === 'var') type = 'Object';
-            this.context.symbolTable.set(p.name, type);
-        });
-
-        const params = stmt.params.map((p: any, i: number) => {
-            let type = paramTypes[i] || 'Object';
-            return `${type} ${p.name}`;
-        }).join(', ');
-
-        const returnType = this.context.functionReturnTypes.get(stmt.name) || 'void';
-        this.emit(`public static ${returnType} ${stmt.name}(${params}) {`);
-        this.indent();
-        this.visitBlock(stmt.body);
-        this.dedent();
-        this.emit('}');
-        this.context.symbolTable.exitScope();
-    }
-
-    visitReturn(stmt: any): void {
-        this.emit(`return ${stmt.value ? this.generateExpression(stmt.value, 0) : ''};`);
-    }
-
-    visitExpressionStatement(stmt: any): void {
-        this.emit(`${this.generateExpression(stmt.expression, 0)};`);
-    }
-
-    generateExpression(expr: Expression, parentPrecedence: number): string {
-        let output = '';
-        let currentPrecedence = 99;
-
+    private genExpr(expr: Expression): string {
         switch (expr.type) {
             case 'Literal':
-                if (typeof expr.value === 'string') {
-                    // Handle f-strings by removing the prefix
-                    const strVal = expr.value.startsWith('f') || expr.value.startsWith('r') || expr.value.startsWith('b') 
-                        ? expr.value.substring(1) 
-                        : expr.value;
-                    output = `"${strVal}"`;
-                } else if (typeof expr.value === 'boolean') output = expr.value.toString();
-                else output = String(expr.value);
-                break;
-            case 'Identifier': output = expr.name; break;
-            case 'ThisExpression': output = 'this'; break;
-            case 'NewExpression':
-                currentPrecedence = Precedence.Instantiation;
-                const args = expr.arguments.map(a => this.generateExpression(a, 0)).join(', ');
-                output = `new ${expr.className}(${args})`;
-                break;
-            case 'MemberExpression':
-                currentPrecedence = Precedence.Member;
-                output = `${this.generateExpression(expr.object, currentPrecedence)}.${expr.property.name}`;
-                break;
-            case 'BinaryExpression':
-                const opMap: Record<string, { op: string, prec: number }> = {
-                    'or': { op: '||', prec: Precedence.LogicalOr }, 'and': { op: '&&', prec: Precedence.LogicalAnd },
-                    '==': { op: '==', prec: Precedence.Equality }, '!=': { op: '!=', prec: Precedence.Equality },
-                    '<': { op: '<', prec: Precedence.Relational }, '>': { op: '>', prec: Precedence.Relational },
-                    '<=': { op: '<=', prec: Precedence.Relational }, '>=': { op: '>=', prec: Precedence.Relational },
-                    '+': { op: '+', prec: Precedence.Additive }, '-': { op: '-', prec: Precedence.Additive },
-                    '*': { op: '*', prec: Precedence.Multiplicative }, '/': { op: '/', prec: Precedence.Multiplicative },
-                    '%': { op: '%', prec: Precedence.Multiplicative }
-                };
-                const opData = opMap[expr.operator] || { op: expr.operator, prec: 0 };
-                currentPrecedence = opData.prec;
-                output = `${this.generateExpression(expr.left, currentPrecedence)} ${opData.op} ${this.generateExpression(expr.right, currentPrecedence)}`;
-                break;
-            case 'UnaryExpression':
-                currentPrecedence = Precedence.Unary;
-                let op = expr.operator === 'not' ? '!' : expr.operator;
-                output = `${op}${this.generateExpression(expr.argument, currentPrecedence)}`;
-                break;
+                if (typeof expr.value === 'boolean') return expr.value ? 'True' : 'False';
+                return typeof expr.value === 'string' ? `"${expr.value}"` : String(expr.value);
+            case 'Identifier': return expr.name === 'this' ? 'self' : expr.name;
+            case 'BinaryExpression': return `${this.genExpr(expr.left)} ${expr.operator} ${this.genExpr(expr.right)}`;
             case 'CallExpression':
-                currentPrecedence = Precedence.Call;
-                const args2 = expr.arguments.map(a => this.generateExpression(a, 0)).join(', ');
-                const calleeStr = (expr.callee as any).type === 'MemberExpression' 
-                    ? this.generateExpression(expr.callee as any, 0) 
-                    : (expr.callee as any).name;
-                output = `${calleeStr}(${args2})`;
-                break;
+                const callee = expr.callee;
+                const calleeName = callee.type === 'Identifier' ? callee.name : this.genExpr(callee);
+                return `${calleeName}(${expr.arguments.map(a => this.genExpr(a)).join(', ')})`;
+            case 'MemberExpression': return `${this.genExpr(expr.object)}.${expr.property.name}`;
+            case 'UnaryExpression':
+                const pyUOp = expr.operator === 'not' ? 'not ' : expr.operator;
+                return `${pyUOp}${this.genExpr(expr.argument)}`;
             case 'ArrayLiteral':
-                const type = this.inferType(expr);
-                const baseType = type.endsWith('[]') ? type.slice(0, -2) : 'Object';
-                const elems = expr.elements.map(e => this.generateExpression(e, 0)).join(', ');
-                output = `new ${baseType}[] {${elems}}`;
-                break;
+                return `[${expr.elements.map(e => this.genExpr(e)).join(', ')}]`;
+            default: return "";
         }
-        return (currentPrecedence < parentPrecedence) ? `(${output})` : output;
     }
 }
 
-class CSPEmitter extends ASTVisitor {
-    visitProgram(program: Program): void {
-        const classes = program.body.filter(s => s.type === 'ClassDeclaration');
-        const nonClasses = program.body.filter(s => s.type !== 'ClassDeclaration');
-
-        classes.forEach(classDecl => {
-            this.visitClassDeclaration(classDecl as ClassDeclaration);
-            this.emit('');
-        });
-        nonClasses.forEach(stmt => this.visitStatement(stmt));
+/** * CSP EMITTER */
+class CSPEmitter extends BaseEmitter {
+    emit(program: Program): string {
+        this.output = [];
+        program.body.forEach(s => this.visitStatement(s));
+        return this.output.join('\n');
     }
 
-    visitClassDeclaration(classDecl: ClassDeclaration): void {
-        this.emit(`CLASS ${classDecl.name}`);
-        this.emit('{');
-        this.indent();
-        classDecl.body.forEach(member => {
-            this.visitStatement(member);
-            this.emit('');
-        });
-        this.dedent();
-        this.emit('}');
-    }
-
-    visitFieldDeclaration(field: FieldDeclaration): void {
-        let line = `${field.access === 'private' ? 'PRIVATE' : 'PUBLIC'} ${field.name}`;
-        if (field.initializer) {
-            line += ` <- ${this.generateExpression(field.initializer, 0)}`;
+    private visitStatement(node: Statement) {
+        switch (node.type) {
+            case 'ClassDeclaration':
+                if (node.name === 'Main') {
+                    node.body.forEach(member => {
+                        if ((member.type === 'FunctionDeclaration' || member.type === ('MethodDeclaration' as any)) && (member as any).name === 'main') {
+                            (member as any).body.body.forEach((s: any) => this.visitStatement(s));
+                        } else {
+                            this.visitStatement(member as any);
+                        }
+                    });
+                } else {
+                    this.add(`// Class ${node.name}`);
+                    node.body.forEach(m => this.visitStatement(m as any));
+                }
+                break;
+            case 'Assignment':
+            case 'FieldDeclaration':
+                const target = node.name.replace(/^unknown\./, "").replace(/^this\./, "").replace(/^self\./, "");
+                this.add(`${target} <- ${this.genExpr(node.value! || (node as any).initializer)}`);
+                break;
+            case 'Print':
+                this.add(`DISPLAY(${this.genExpr(node.expression)})`);
+                break;
+            case 'FunctionDeclaration':
+            case 'MethodDeclaration' as any:
+            case 'Constructor':
+                const name = node.type === 'Constructor' ? 'Init' : node.name;
+                this.add(`PROCEDURE ${name} (${node.params.map(p => p.name).join(', ')})`);
+                this.add("{");
+                this.indent();
+                node.body.body.forEach(s => this.visitStatement(s as any));
+                this.dedent();
+                this.add("}");
+                break;
+            case 'If':
+                this.add(`IF (${this.genExpr(node.condition)})`);
+                this.add("{");
+                this.indent();
+                node.thenBranch.body.forEach(s => this.visitStatement(s as any));
+                this.dedent();
+                this.add("}");
+                if (node.elseBranch) {
+                    this.add("ELSE");
+                    this.add("{");
+                    this.indent();
+                    node.elseBranch.body.forEach(s => this.visitStatement(s as any));
+                    this.dedent();
+                    this.add("}");
+                }
+                break;
+            case 'While':
+                this.add(`REPEAT UNTIL (NOT (${this.genExpr(node.condition)}))`);
+                this.add("{");
+                this.indent();
+                node.body.body.forEach(s => this.visitStatement(s as any));
+                this.dedent();
+                this.add("}");
+                break;
+            case 'Return':
+                this.add(`RETURN ${node.value ? this.genExpr(node.value) : ''}`);
+                break;
+            case 'ExpressionStatement':
+                this.add(this.genExpr(node.expression));
+                break;
         }
-        this.emit(line);
     }
 
-    visitConstructor(ctor: Constructor): void {
-        const params = ctor.params.map(p => p.name).join(', ');
-        this.emit(`CONSTRUCTOR (${params})`);
-        this.emit('{');
-        this.indent();
-        this.visitBlock(ctor.body);
-        this.dedent();
-        this.emit('}');
-    }
-
-    visitMethodDeclaration(method: MethodDeclaration): void {
-        const access = method.access === 'private' ? 'PRIVATE' : 'PUBLIC';
-        const params = method.params.map(p => p.name).join(', ');
-        this.emit(`${access} PROCEDURE ${method.name} (${params})`);
-        this.emit('{');
-        this.indent();
-        this.visitBlock(method.body);
-        this.dedent();
-        this.emit('}');
-    }
-
-    visitBlock(block: Block): void {
-        block.body.forEach(stmt => this.visitStatement(stmt));
-    }
-
-    visitPrint(stmt: any): void {
-        this.emit(`DISPLAY(${this.generateExpression(stmt.expression, 0)})`);
-    }
-
-    visitAssignment(stmt: any): void {
-        this.emit(`${stmt.name} <- ${this.generateExpression(stmt.value, 0)}`);
-    }
-
-    visitIf(stmt: any): void {
-        this.emit(`IF (${this.generateExpression(stmt.condition, 0)})`);
-        this.emit('{'); this.indent(); this.visitBlock(stmt.thenBranch); this.dedent(); this.emit('}');
-        if (stmt.elseBranch) {
-            this.emit('ELSE');
-            this.emit('{'); this.indent(); this.visitBlock(stmt.elseBranch); this.dedent(); this.emit('}');
-        }
-    }
-
-    visitWhile(stmt: any): void {
-        this.emit(`REPEAT UNTIL (NOT (${this.generateExpression(stmt.condition, 0)}))`);
-        this.emit('{'); this.indent(); this.visitBlock(stmt.body); this.dedent(); this.emit('}');
-    }
-
-    visitFor(stmt: any): void {
-        this.emit(`FOR EACH ${stmt.variable} IN ${this.generateExpression(stmt.iterable, 0)}`);
-        this.emit('{'); this.indent(); this.visitBlock(stmt.body); this.dedent(); this.emit('}');
-    }
-
-    visitFunctionDeclaration(stmt: any): void {
-        const params = stmt.params.map((p: any) => p.name).join(', ');
-        this.emit(`PROCEDURE ${stmt.name} (${params})`);
-        this.emit('{'); this.indent(); this.visitBlock(stmt.body); this.dedent(); this.emit('}');
-    }
-
-    visitReturn(stmt: any): void {
-        this.emit(`RETURN ${stmt.value ? this.generateExpression(stmt.value, 0) : ''}`);
-    }
-
-    visitExpressionStatement(stmt: any): void {
-        this.emit(this.generateExpression(stmt.expression, 0));
-    }
-
-    generateExpression(expr: Expression, parentPrecedence: number): string {
-        let output = '';
-        let currentPrecedence = 99;
-
+    private genExpr(expr: Expression): string {
         switch (expr.type) {
-            case 'Literal':
-                if (typeof expr.value === 'string') {
-                    // Handle f-strings by removing the prefix
-                    const strVal = expr.value.startsWith('f') || expr.value.startsWith('r') || expr.value.startsWith('b') 
-                        ? expr.value.substring(1) 
-                        : expr.value;
-                    output = `"${strVal}"`;
-                } else if (typeof expr.value === 'boolean') output = expr.value ? 'true' : 'false';
-                else output = String(expr.value);
-                break;
-            case 'Identifier': output = expr.name; break;
-            case 'ThisExpression': output = 'THIS'; break;
-            case 'NewExpression':
-                currentPrecedence = Precedence.Instantiation;
-                const args = expr.arguments.map(a => this.generateExpression(a, 0)).join(', ');
-                output = `NEW ${expr.className}(${args})`;
-                break;
-            case 'MemberExpression':
-                currentPrecedence = Precedence.Member;
-                output = `${this.generateExpression(expr.object, currentPrecedence)}.${expr.property.name}`;
-                break;
+            case 'Literal': return String(expr.value);
+            case 'Identifier': return expr.name;
             case 'BinaryExpression':
-                const opMap: Record<string, { op: string, prec: number }> = {
-                    'or': { op: 'OR', prec: Precedence.LogicalOr }, 'and': { op: 'AND', prec: Precedence.LogicalAnd },
-                    '==': { op: '=', prec: Precedence.Equality }, '!=': { op: '<>', prec: Precedence.Equality },
-                    '<': { op: '<', prec: Precedence.Relational }, '>': { op: '>', prec: Precedence.Relational },
-                    '<=': { op: '<=', prec: Precedence.Relational }, '>=': { op: '>=', prec: Precedence.Relational },
-                    '+': { op: '+', prec: Precedence.Additive }, '-': { op: '-', prec: Precedence.Additive },
-                    '*': { op: '*', prec: Precedence.Multiplicative }, '/': { op: '/', prec: Precedence.Multiplicative },
-                    '%': { op: 'MOD', prec: Precedence.Multiplicative }
-                };
-                const opData = opMap[expr.operator] || { op: expr.operator, prec: 0 };
-                currentPrecedence = opData.prec;
-                output = `${this.generateExpression(expr.left, currentPrecedence)} ${opData.op} ${this.generateExpression(expr.right, currentPrecedence)}`;
-                break;
-            case 'UnaryExpression':
-                currentPrecedence = Precedence.Unary;
-                let op = expr.operator === '!' || expr.operator === 'not' ? 'NOT ' : expr.operator;
-                output = `${op}${this.generateExpression(expr.argument, currentPrecedence)}`;
-                break;
+                let op = expr.operator;
+                if (op === '==') op = '=';
+                if (op === '!=') op = '<>';
+                if (op === 'and') op = 'AND';
+                if (op === 'or') op = 'OR';
+                if (op === '%') op = 'MOD';
+                return `${this.genExpr(expr.left)} ${op} ${this.genExpr(expr.right)}`;
             case 'CallExpression':
-                currentPrecedence = Precedence.Call;
-                const args2 = expr.arguments.map(a => this.generateExpression(a, 0)).join(', ');
-                const calleeStr = (expr.callee as any).type === 'MemberExpression' 
-                    ? this.generateExpression(expr.callee as any, 0) 
-                    : (expr.callee as any).name;
-                output = `${calleeStr}(${args2})`;
-                break;
-            case 'ArrayLiteral':
-                const elems = expr.elements.map(e => this.generateExpression(e, 0)).join(', ');
-                output = `[${elems}]`;
-                break;
-        }
-        return (currentPrecedence < parentPrecedence) ? `(${output})` : output;
-    }
-}
-
-class PythonEmitter extends ASTVisitor {
-    visitProgram(program: Program): void {
-        const classes = program.body.filter(s => s.type === 'ClassDeclaration');
-        const nonClasses = program.body.filter(s => s.type !== 'ClassDeclaration');
-
-        classes.forEach(classDecl => {
-            this.visitClassDeclaration(classDecl as ClassDeclaration);
-            this.emit('');
-        });
-
-        const functions = nonClasses.filter(s => s.type === 'FunctionDeclaration');
-        const mainBody = nonClasses.filter(s => s.type !== 'FunctionDeclaration');
-
-        functions.forEach(func => {
-            this.visitStatement(func);
-            this.emit('');
-        });
-        mainBody.forEach(stmt => this.visitStatement(stmt));
-    }
-
-    visitClassDeclaration(classDecl: ClassDeclaration): void {
-        const baseClass = classDecl.superClass ? `(${classDecl.superClass.name})` : '';
-        this.emit(`class ${classDecl.name}${baseClass}:`);
-        this.indent();
-        
-        classDecl.body.forEach(member => {
-            this.visitStatement(member);
-            this.emit('');
-        });
-
-        this.dedent();
-    }
-
-    visitFieldDeclaration(field: FieldDeclaration): void {
-        // In Python, fields are typically set in __init__
-        let line = `self.${field.name}`;
-        if (field.initializer) {
-            line += ` = ${this.generateExpression(field.initializer, 0)}`;
-        } else {
-            line += ` = None`;
-        }
-        this.emit(line);
-    }
-
-    visitConstructor(ctor: Constructor): void {
-        const params = ctor.params.map(p => p.name).join(', ');
-        this.emit(`def __init__(self, ${params}):`);
-        this.indent();
-        this.context.symbolTable.enterScope();
-        ctor.params.forEach(p => this.context.symbolTable.set(p.name, p.paramType || 'auto'));
-        this.visitBlock(ctor.body);
-        this.context.symbolTable.exitScope();
-        this.dedent();
-    }
-
-    visitMethodDeclaration(method: MethodDeclaration): void {
-        const params = method.params.map(p => p.name).join(', ');
-        this.emit(`def ${method.name}(self, ${params}):`);
-        this.indent();
-        this.context.symbolTable.enterScope();
-        method.params.forEach(p => this.context.symbolTable.set(p.name, p.paramType || 'auto'));
-        this.visitBlock(method.body);
-        this.context.symbolTable.exitScope();
-        this.dedent();
-    }
-
-    visitBlock(block: Block): void {
-        block.body.forEach(stmt => this.visitStatement(stmt));
-    }
-
-    visitPrint(stmt: any): void {
-        this.emit(`print(${this.generateExpression(stmt.expression, 0)})`);
-    }
-
-    visitAssignment(stmt: any): void {
-        this.emit(`${stmt.name} = ${this.generateExpression(stmt.value, 0)}`);
-    }
-
-    visitIf(stmt: any): void {
-        this.emit(`if ${this.generateExpression(stmt.condition, 0)}:`);
-        this.indent(); this.visitBlock(stmt.thenBranch); this.dedent();
-        if (stmt.elseBranch) {
-            this.emit('else:');
-            this.indent(); this.visitBlock(stmt.elseBranch); this.dedent();
-        }
-    }
-
-    visitWhile(stmt: any): void {
-        this.emit(`while ${this.generateExpression(stmt.condition, 0)}:`);
-        this.indent(); this.visitBlock(stmt.body); this.dedent();
-    }
-
-    visitFor(stmt: any): void {
-        this.emit(`for ${stmt.variable} in ${this.generateExpression(stmt.iterable, 0)}:`);
-        this.indent(); this.visitBlock(stmt.body); this.dedent();
-    }
-
-    visitFunctionDeclaration(stmt: any): void {
-        const params = stmt.params.map((p: any) => p.name).join(', ');
-        this.emit(`def ${stmt.name}(${params}):`);
-        this.indent(); this.visitBlock(stmt.body); this.dedent();
-    }
-
-    visitReturn(stmt: any): void {
-        this.emit(`return ${stmt.value ? this.generateExpression(stmt.value, 0) : ''}`);
-    }
-
-    visitExpressionStatement(stmt: any): void {
-        this.emit(this.generateExpression(stmt.expression, 0));
-    }
-
-    generateExpression(expr: Expression, parentPrecedence: number): string {
-        let output = '';
-        let currentPrecedence = 99;
-
-        switch (expr.type) {
-            case 'Literal':
-                if (typeof expr.value === 'string') {
-                    // Handle f-strings by removing the prefix
-                    const strVal = expr.value.startsWith('f') || expr.value.startsWith('r') || expr.value.startsWith('b') 
-                        ? expr.value.substring(1) 
-                        : expr.value;
-                    output = `"${strVal}"`;
-                } else if (typeof expr.value === 'boolean') output = expr.value ? 'True' : 'False';
-                else output = String(expr.value);
-                break;
-            case 'Identifier': output = expr.name; break;
-            case 'ThisExpression': output = 'self'; break;
-            case 'NewExpression':
-                currentPrecedence = Precedence.Instantiation;
-                const args = expr.arguments.map(a => this.generateExpression(a, 0)).join(', ');
-                output = `${expr.className}(${args})`;
-                break;
-            case 'MemberExpression':
-                currentPrecedence = Precedence.Member;
-                output = `${this.generateExpression(expr.object, currentPrecedence)}.${expr.property.name}`;
-                break;
-            case 'BinaryExpression':
-                const opMap: Record<string, { op: string, prec: number }> = {
-                    'or': { op: 'or', prec: Precedence.LogicalOr }, 'and': { op: 'and', prec: Precedence.LogicalAnd },
-                    '==': { op: '==', prec: Precedence.Equality }, '!=': { op: '!=', prec: Precedence.Equality },
-                    '<': { op: '<', prec: Precedence.Relational }, '>': { op: '>', prec: Precedence.Relational },
-                    '<=': { op: '<=', prec: Precedence.Relational }, '>=': { op: '>=', prec: Precedence.Relational },
-                    '+': { op: '+', prec: Precedence.Additive }, '-': { op: '-', prec: Precedence.Additive },
-                    '*': { op: '*', prec: Precedence.Multiplicative }, '/': { op: '/', prec: Precedence.Multiplicative },
-                    '%': { op: '%', prec: Precedence.Multiplicative }
-                };
-                const opData = opMap[expr.operator] || { op: expr.operator, prec: 0 };
-                currentPrecedence = opData.prec;
-                output = `${this.generateExpression(expr.left, currentPrecedence)} ${opData.op} ${this.generateExpression(expr.right, currentPrecedence)}`;
-                break;
+                const callee = expr.callee;
+                const calleeName = callee.type === 'Identifier' ? callee.name : this.genExpr(callee);
+                return `${calleeName}(${expr.arguments.map(a => this.genExpr(a)).join(', ')})`;
             case 'UnaryExpression':
-                currentPrecedence = Precedence.Unary;
-                let op = expr.operator === '!' ? 'not ' : expr.operator;
-                output = `${op}${this.generateExpression(expr.argument, currentPrecedence)}`;
-                break;
-            case 'CallExpression':
-                currentPrecedence = Precedence.Call;
-                const args2 = expr.arguments.map(a => this.generateExpression(a, 0)).join(', ');
-                const calleeStr = (expr.callee as any).type === 'MemberExpression' 
-                    ? this.generateExpression(expr.callee as any, 0) 
-                    : (expr.callee as any).name;
-                output = `${calleeStr}(${args2})`;
-                break;
-            case 'ArrayLiteral':
-                const elems = expr.elements.map(e => this.generateExpression(e, 0)).join(', ');
-                output = `[${elems}]`;
-                break;
+                const cspUOp = expr.operator === 'not' ? 'NOT ' : expr.operator;
+                return `${cspUOp}${this.genExpr(expr.argument)}`;
+            default: return "";
         }
-        return (currentPrecedence < parentPrecedence) ? `(${output})` : output;
-    }
-}
-
-// --- Main Translator Class ---
-
-export class Translator {
-    translate(program: Program, targetLang: TargetLanguage): string {
-        const context = this.analyze(program);
-
-        let emitter: ASTVisitor;
-        switch (targetLang) {
-            case 'java': emitter = new JavaEmitter(context); break;
-            case 'csp': emitter = new CSPEmitter(context); break;
-            case 'python': emitter = new PythonEmitter(context); break;
-            default: throw new Error(`Unsupported target language: ${targetLang}`);
-        }
-
-        emitter.visitProgram(program);
-        return emitter.getGeneratedCode();
-    }
-
-    private analyze(program: Program): TranslationContext {
-        const context: TranslationContext = {
-            symbolTable: new SymbolTable(),
-            functionReturnTypes: new Map(),
-            functionParamTypes: new Map()
-        };
-
-        // --- Helper to infer types during analysis ---
-        const inferType = (expr: Expression): string => {
-            switch (expr.type) {
-                case 'Literal':
-                    if (typeof expr.value === 'boolean') return 'boolean';
-                    if (typeof expr.value === 'string') return 'String';
-                    if (typeof expr.value === 'number') {
-                        if (expr.raw && (expr.raw.includes('.') || expr.raw.toLowerCase().includes('e'))) return 'double';
-                        return 'int';
-                    }
-                    return 'Object';
-                case 'Identifier': return context.symbolTable.get(expr.name) || 'var';
-                case 'BinaryExpression':
-                    if (['>', '<', '>=', '<=', '==', '!='].includes(expr.operator)) return 'boolean';
-                    const left = inferType(expr.left);
-                    if (left === 'double') return 'double';
-                    return 'int';
-                case 'CallExpression':
-                    const calleeNameForAnalysis = (expr.callee as any).name;
-                    if (calleeNameForAnalysis && context.functionReturnTypes.has(calleeNameForAnalysis)) return context.functionReturnTypes.get(calleeNameForAnalysis)!;
-                    return 'var';
-                default: return 'var';
-            }
-        };
-
-        // --- Analysis Walkers ---
-
-        const analyzeBlock = (statements: Statement[]) => {
-            statements.forEach(stmt => {
-                if (stmt.type === 'Assignment') {
-                    const type = inferType(stmt.value);
-                    if (type !== 'var') context.symbolTable.set(stmt.name, type);
-                }
-                if (stmt.type === 'If') {
-                    analyzeBlock(stmt.thenBranch.body);
-                    if (stmt.elseBranch) analyzeBlock(stmt.elseBranch.body);
-                }
-                if (stmt.type === 'While') analyzeBlock(stmt.body.body);
-                if (stmt.type === 'For') analyzeBlock(stmt.body.body);
-            });
-        };
-
-        const analyzeCalls = (node: any) => {
-            if (!node) return;
-            if (node.type === 'CallExpression') {
-                const funcName = node.callee.name;
-                const argTypes = node.arguments.map((arg: Expression) => inferType(arg));
-                if (!context.functionParamTypes.has(funcName)) {
-                    context.functionParamTypes.set(funcName, argTypes);
-                }
-            }
-            for (const key in node) {
-                if (typeof node[key] === 'object' && node[key] !== null) {
-                    if (Array.isArray(node[key])) node[key].forEach((c: any) => analyzeCalls(c));
-                    else analyzeCalls(node[key]);
-                }
-            }
-        };
-
-        const analyzeReturnType = (block: Block): string => {
-            for (const stmt of block.body) {
-                if (stmt.type === 'Return') return stmt.value ? inferType(stmt.value) : 'void';
-                if (stmt.type === 'If') {
-                    const t = analyzeReturnType(stmt.thenBranch);
-                    if (t !== 'void') return t;
-                    if (stmt.elseBranch) {
-                        const e = analyzeReturnType(stmt.elseBranch);
-                        if (e !== 'void') return e;
-                    }
-                }
-            }
-            return 'void';
-        };
-
-        // --- Execute Analysis ---
-        const functions = program.body.filter(s => s.type === 'FunctionDeclaration');
-        functions.forEach((func: any) => {
-            context.functionReturnTypes.set(func.name, analyzeReturnType(func.body));
-        });
-        analyzeBlock(program.body);
-        analyzeCalls(program);
-
-        return context;
     }
 }

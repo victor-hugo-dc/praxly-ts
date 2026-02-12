@@ -60,9 +60,8 @@ class JavaInstance {
 
     getField(name: string): any {
         if (this.fields.has(name)) return this.fields.get(name);
-        // Check class fields
         if (this.klass.fields.has(name)) return this.klass.fields.get(name);
-        throw new Error(`Undefined field '${name}'`);
+        return null;
     }
 
     setField(name: string, value: any) {
@@ -75,10 +74,11 @@ class JavaInstance {
 
         const methodEnv = new Environment(env);
         methodEnv.define('this', this);
-        methodEnv.define('self', this); // Python compatibility
+        methodEnv.define('self', this);
 
-        // Bind parameters
-        method.params.forEach((param, i) => {
+        // Bind parameters, skipping 'self' if it's explicitly in the signature
+        const actualParams = method.params.filter(p => p.name !== 'self' && p.name !== 'this');
+        actualParams.forEach((param, i) => {
             methodEnv.define(param.name, args[i] || null);
         });
 
@@ -102,19 +102,27 @@ export class Interpreter {
         this.globalEnv = new Environment();
         this.classes = new Map();
 
+        // Register built-ins
+        this.globalEnv.define('str', (args: any[]) => this.stringify(args[0]));
+        this.globalEnv.define('print', (args: any[]) => {
+            const val = args.length > 0 ? args[0] : null;
+            this.output.push(this.stringify(val));
+            return null;
+        });
+
         try {
-            // First pass: register all classes
+            // Pass 1: Register classes
             for (const stmt of program.body) {
                 if (stmt.type === 'ClassDeclaration') {
                     this.registerClass(stmt);
                 }
             }
 
-            // Second pass: execute all non-class statements
+            // Pass 2: Execute global statements
             const nonClassStatements = program.body.filter(stmt => stmt.type !== 'ClassDeclaration');
             this.executeBlock(nonClassStatements, this.globalEnv);
-            
-            // Third pass: if there's a Main class, execute its main() method
+
+            // Pass 3: Main entry point
             if (this.classes.has('Main')) {
                 const mainClass = this.classes.get('Main')!;
                 const mainMethod = mainClass.getMethod('main');
@@ -131,8 +139,6 @@ export class Interpreter {
 
     private registerClass(classDecl: ClassDeclaration) {
         const javaClass = new JavaClass(classDecl.name);
-
-        // Register methods
         for (const member of classDecl.body) {
             if (member.type === 'MethodDeclaration') {
                 javaClass.addMethod(member);
@@ -142,66 +148,63 @@ export class Interpreter {
                 javaClass.fields.set(member.name, member.initializer ? this.evaluate(member.initializer, this.globalEnv) : null);
             }
         }
-
         this.classes.set(classDecl.name, javaClass);
         this.globalEnv.define(classDecl.name, javaClass);
     }
 
     executeBlock(statements: Statement[], env: Environment) {
-        for (const stmt of statements) { 
-            this.execute(stmt, env); 
+        for (const stmt of statements) {
+            this.execute(stmt, env);
         }
     }
 
     private execute(stmt: Statement, env: Environment) {
         switch (stmt.type) {
-            case 'ClassDeclaration':
-                // Classes are registered in first pass
-                break;
+            case 'ClassDeclaration': break;
             case 'Print':
-                const val = this.evaluate(stmt.expression, env);
-                this.output.push(this.stringify(val));
+                this.output.push(this.stringify(this.evaluate(stmt.expression, env)));
                 break;
             case 'Assignment':
                 const value = this.evaluate(stmt.value, env);
-                if (stmt.name.includes('.')) {
-                    // Handle member assignment (e.g., self.x = 10)
-                    const parts = stmt.name.split('.');
+                // Fix: Handle "unknown." prefix and resolve fields correctly
+                const cleanName = stmt.name.replace(/^unknown\./, "");
+                if (cleanName.includes('.')) {
+                    const parts = cleanName.split('.');
                     const objName = parts[0];
                     const fieldName = parts.slice(1).join('.');
                     const obj = env.get(objName);
                     if (obj instanceof JavaInstance) {
                         obj.setField(fieldName, value);
                     } else {
-                        throw new Error(`Cannot assign to field on non-object`);
+                        throw new Error(`Cannot assign field '${fieldName}' on non-object`);
                     }
                 } else {
-                    // Handle simple variable assignment
-                    env.define(stmt.name, value);
+                    env.define(cleanName, value);
                 }
                 break;
             case 'If':
-                const truthy = this.evaluate(stmt.condition, env);
-                if (truthy) { this.executeBlock(stmt.thenBranch.body, env); }
-                else if (stmt.elseBranch) { this.executeBlock(stmt.elseBranch.body, env); }
+                if (this.evaluate(stmt.condition, env)) {
+                    this.executeBlock(stmt.thenBranch.body, env);
+                } else if (stmt.elseBranch) {
+                    this.executeBlock(stmt.elseBranch.body, env);
+                }
                 break;
             case 'While':
                 while (this.evaluate(stmt.condition, env)) { this.executeBlock(stmt.body.body, env); }
                 break;
             case 'For':
                 const iterable = this.evaluate(stmt.iterable, env);
-                if (!Array.isArray(iterable) && typeof iterable !== 'string') throw new Error("For loop requires array or string");
+                if (!Array.isArray(iterable) && typeof iterable !== 'string') throw new Error("Loop target must be array or string");
                 for (const item of iterable) {
                     env.define(stmt.variable, item);
                     this.executeBlock(stmt.body.body, env);
                 }
                 break;
-            case 'FunctionDeclaration':
-                env.define(stmt.name, stmt);
-                break;
+            // case 'FunctionDeclaration':
+            //     env.define(stmt.name, stmt);
+            //     break;
             case 'Return':
-                const retVal = stmt.value ? this.evaluate(stmt.value, env) : null;
-                throw new ReturnException(retVal);
+                throw new ReturnException(stmt.value ? this.evaluate(stmt.value, env) : null);
             case 'ExpressionStatement':
                 this.evaluate(stmt.expression, env);
                 break;
@@ -210,24 +213,11 @@ export class Interpreter {
 
     evaluate(expr: Expression, env: Environment): any {
         switch (expr.type) {
-            case 'Literal': 
-                return expr.value;
-            case 'ArrayLiteral': 
-                return expr.elements.map(e => this.evaluate(e, env));
-            case 'Identifier': 
+            case 'Literal': return expr.value;
+            case 'Identifier':
                 return env.get(expr.name);
-            case 'ThisExpression':
-                // Support both 'this' (Java) and 'self' (Python)
-                try {
-                    return env.get('this');
-                } catch {
-                    return env.get('self');
-                }
-            case 'UnaryExpression':
-                const right = this.evaluate(expr.argument, env);
-                if (expr.operator === '-') return -right;
-                if (expr.operator === '!' || expr.operator === 'not') return !right;
-                break;
+            // case 'ThisExpression':
+            //     try { return env.get('this'); } catch { return env.get('self'); }
             case 'BinaryExpression':
                 const l = this.evaluate(expr.left, env);
                 const r = this.evaluate(expr.right, env);
@@ -236,85 +226,68 @@ export class Interpreter {
                     case '-': return l - r;
                     case '*': return l * r;
                     case '/': return l / r;
-                    case '%': return l % r;
-                    case '>': return l > r;
-                    case '<': return l < r;
-                    case '>=': return l >= r;
-                    case '<=': return l <= r;
                     case '==': return l === r;
                     case '!=': return l !== r;
+                    case '>': return l > r;
+                    case '<': return l < r;
                     case 'and': return l && r;
                     case 'or': return l || r;
-                    default: throw new Error(`Unknown operator ${expr.operator}`);
+                    default: return null;
                 }
-                break;
-            case 'NewExpression':
-                const klass = env.get(expr.className);
-                if (!klass || !(klass instanceof JavaClass)) {
-                    throw new Error(`Undefined class '${expr.className}'`);
-                }
-                const instance = new JavaInstance(klass);
-                const args = expr.arguments.map(a => this.evaluate(a, env));
-
-                // Call constructor if it exists
-                if (klass.ctorDecl) {
-                    const ctorEnv = new Environment(env);
-                    ctorEnv.define('this', instance);
-                    ctorEnv.define('self', instance); // Python compatibility
-                    klass.ctorDecl.params.forEach((param, i) => {
-                        ctorEnv.define(param.name, args[i] || null);
-                    });
-                    try {
-                        this.executeBlock(klass.ctorDecl.body.body, ctorEnv);
-                    } catch (e) {
-                        if (!(e instanceof ReturnException)) throw e;
-                    }
-                }
-
-                return instance;
-
+            // case 'NewExpression':
+            //     const klass = env.get(expr.className);
+            //     if (!(klass instanceof JavaClass)) throw new Error(`Class ${expr.className} not found`);
+            //     const inst = new JavaInstance(klass);
+            //     const args = expr.arguments.map(a => this.evaluate(a, env));
+            //     if (klass.ctorDecl) {
+            //         const cEnv = new Environment(env);
+            //         cEnv.define('this', inst);
+            //         cEnv.define('self', inst);
+            //         klass.ctorDecl.params.filter(p => p.name !== 'self').forEach((p, i) => cEnv.define(p.name, args[i]));
+            //         try { this.executeBlock(klass.ctorDecl.body.body, cEnv); } catch (e) { if (!(e instanceof ReturnException)) throw e; }
+            //     }
+            //     return inst;
             case 'MemberExpression':
                 const obj = this.evaluate(expr.object, env);
-                if (obj instanceof JavaInstance) {
-                    return obj.getField(expr.property.name);
-                }
-                throw new Error(`Cannot access member on non-object`);
-
+                if (obj instanceof JavaInstance) return obj.getField(expr.property.name);
+                throw new Error("Member access on non-object");
             case 'CallExpression':
-                // Handle method calls (obj.method())
+                const argsEval = expr.arguments.map(a => this.evaluate(a, env));
                 if ((expr.callee as any).type === 'MemberExpression') {
-                    const memberExpr = expr.callee as any;
-                    const obj = this.evaluate(memberExpr.object, env);
-                    const methodName = memberExpr.property.name;
-                    const args = expr.arguments.map(a => this.evaluate(a, env));
-                    
-                    if (obj instanceof JavaInstance) {
-                        return obj.callMethod(methodName, args, this, env);
-                    }
-                    throw new Error(`Cannot call method on non-object`);
+                    const m = expr.callee as any;
+                    const o = this.evaluate(m.object, env);
+                    if (o instanceof JavaInstance) return o.callMethod(m.property.name, argsEval, this, env);
                 }
-                
-                // Handle function calls
-                const callee = env.get((expr.callee as any).name);
-                if (callee && callee.type === 'FunctionDeclaration') {
-                    const func = callee as FunctionDeclaration;
-                    const args = expr.arguments.map(a => this.evaluate(a, env));
-                    if (args.length !== func.params.length) throw new Error(`Expected ${func.params.length} arguments but got ${args.length}`);
-                    const fnEnv = new Environment(env);
-                    func.params.forEach((param, i) => fnEnv.define(param.name, args[i]));
-                    try { this.executeBlock(func.body.body, fnEnv); }
-                    catch (e) { if (e instanceof ReturnException) return e.value; throw e; }
-                    return null;
+                const fnName = (expr.callee as any).name;
+                const fn = env.get(fnName);
+                if (typeof fn === 'function') return fn(argsEval);
+                if (fn && fn.type === 'FunctionDeclaration') {
+                    const fEnv = new Environment(env);
+                    fn.params.forEach((p: any, i: number) => fEnv.define(p.name, argsEval[i]));
+                    try { this.executeBlock(fn.body.body, fEnv); } catch (e) { if (e instanceof ReturnException) return e.value; throw e; }
                 }
-                throw new Error(`Undefined function ${(expr.callee as any).name}`);
+                return null;
+            case 'StringFormatNode' as any:
+                const node = expr as any;
+                return node.parts.map((p: any) => typeof p === 'string' ? p : this.stringify(this.evaluate(p, env))).join('');
         }
+        return null;
     }
 
     private stringify(val: any): string {
         if (val === null) return 'None';
-        if (val === true) return 'True';
-        if (val === false) return 'False';
-        if (val instanceof JavaInstance) return `${val.klass.name} instance`;
+        if (typeof val === 'boolean') return val ? 'True' : 'False';
+        if (val instanceof JavaClass) {
+            return `<class '${val.name}'>`;
+        }
+        if (val instanceof JavaInstance) {
+            const m = val.klass.getMethod('str') || val.klass.getMethod('__str__');
+            if (m) {
+                const result = val.callMethod(m.name, [], this, this.globalEnv);
+                return this.stringify(result);
+            }
+            return `<${val.klass.name} object at ${Math.random().toString(16).slice(2, 10)}>`;
+        }
         if (Array.isArray(val)) return `[${val.map(v => this.stringify(v)).join(', ')}]`;
         return String(val);
     }
