@@ -1,6 +1,6 @@
-import { useState, useCallback, useEffect, useRef } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
-import { Play, Trash2, Code, Terminal, FileJson, AlertCircle, Home, ArrowRightLeft, X, Plus } from 'lucide-react';
+import { Play, Trash2, Code, Terminal, FileJson, AlertCircle, Home, ArrowRightLeft, Bug, FastForward, Square, X, Plus } from 'lucide-react';
 
 import CodeMirror from '@uiw/react-codemirror';
 import { python } from '@codemirror/lang-python';
@@ -70,8 +70,13 @@ export default function EditorPage() {
     // Manage dynamic panels
     const [panels, setPanels] = useState<Panel[]>([]);
 
+    // Debugger State
+    const [isDebugging, setIsDebugging] = useState(false);
+    const [debugStep, setDebugStep] = useState(0);
+
     // Resizing State
-    const [resizingIdx, setResizingIdx] = useState<number | 'editor' | null>(null);
+    const [resizingIdx, setResizingIdx] = useState<number | 'editor' | 'output' | null>(null);
+    const [outputHeight, setOutputHeight] = useState(176); // Initial height (h-44 = 176px)
     const containerRef = useRef<HTMLDivElement>(null);
 
     // Adaptive layout: Split space equally among editor + all open panels
@@ -144,6 +149,23 @@ export default function EditorPage() {
         }
     };
 
+    const handleDebugStart = () => {
+        setIsDebugging(true);
+        setDebugStep(0);
+        setOutput(["Debugger started...", "Ready to step."]);
+    };
+
+    const handleDebugStep = () => {
+        setDebugStep(prev => prev + 1);
+        setOutput(prev => [...prev, `Step ${debugStep + 1} executed.`]);
+    };
+
+    const handleDebugStop = () => {
+        setIsDebugging(false);
+        setDebugStep(0);
+        setOutput(prev => [...prev, "Debugger stopped."]);
+    };
+
     const handleClear = () => {
         setCode('');
         setAst(null);
@@ -183,7 +205,7 @@ export default function EditorPage() {
     };
 
     // Resize Handler
-    const onMouseDown = (e: React.MouseEvent, index: number | 'editor') => {
+    const onMouseDown = (e: React.MouseEvent, index: number | 'editor' | 'output') => {
         setResizingIdx(index);
         e.preventDefault();
     };
@@ -192,9 +214,15 @@ export default function EditorPage() {
         const handleMouseMove = (e: MouseEvent) => {
             if (resizingIdx === null) return;
 
-            if (resizingIdx === 'editor') {
+            if (resizingIdx === 'output') {
+                // Resizing output panel (vertical)
+                const newHeight = window.innerHeight - e.clientY;
+                setOutputHeight(Math.max(50, Math.min(newHeight, window.innerHeight - 100)));
+            } else if (resizingIdx === 'editor') {
+                // Resizing editor (horizontal)
                 setEditorWidth(prev => Math.max(150, prev + e.movementX));
             } else {
+                // Resizing dynamic panels (horizontal)
                 setPanels(prev => {
                     const newPanels = [...prev];
                     const panel = newPanels[resizingIdx as number];
@@ -227,9 +255,7 @@ export default function EditorPage() {
                     </Link>
                     <div className="h-6 w-px bg-slate-800 mx-1" />
                     <div className="flex items-center gap-2">
-                        <div className="bg-indigo-600 p-1.5 rounded-lg">
-                            <Code size={20} className="text-white" />
-                        </div>
+                        <img src='/favicon.ico' style={{ width: "32px", height: "32px" }} alt="Logo" />
                         <h1 className="font-bold text-lg text-slate-100 tracking-tight">Praxly <span className="text-indigo-400">2.0</span></h1>
                     </div>
                 </div>
@@ -238,9 +264,25 @@ export default function EditorPage() {
                     <button onClick={handleClear} className="flex items-center gap-2 px-3 py-1.5 text-xs font-semibold uppercase tracking-wider text-slate-400 hover:text-white hover:bg-slate-800 rounded-md transition-colors">
                         <Trash2 size={14} /> Clear
                     </button>
-                    <button onClick={handleRun} className="flex items-center gap-2 px-4 py-1.5 text-sm font-bold text-white bg-green-600 hover:bg-green-700 rounded-md shadow-lg shadow-green-900/20 transition-all hover:translate-y-[-1px] active:translate-y-[1px]">
-                        <Play size={16} fill="currentColor" /> Run Code
-                    </button>
+                    {!isDebugging ? (
+                        <>
+                            <button onClick={handleDebugStart} className="flex items-center gap-2 px-4 py-1.5 text-sm font-bold text-slate-200 bg-slate-700 hover:bg-slate-600 rounded-md transition-all">
+                                <Bug size={16} /> Debug
+                            </button>
+                            <button onClick={handleRun} className="flex items-center gap-2 px-4 py-1.5 text-sm font-bold text-white bg-green-600 hover:bg-green-700 rounded-md shadow-lg shadow-green-900/20 transition-all hover:translate-y-[-1px] active:translate-y-[1px]">
+                                <Play size={16} fill="currentColor" /> Run Code
+                            </button>
+                        </>
+                    ) : (
+                        <>
+                            <button onClick={handleDebugStep} className="flex items-center gap-2 px-4 py-1.5 text-sm font-bold text-white bg-blue-600 hover:bg-blue-700 rounded-md transition-all">
+                                <FastForward size={16} fill="currentColor" /> Step
+                            </button>
+                            <button onClick={handleDebugStop} className="flex items-center gap-2 px-4 py-1.5 text-sm font-bold text-white bg-red-600 hover:bg-red-700 rounded-md transition-all">
+                                <Square size={16} fill="currentColor" /> Stop
+                            </button>
+                        </>
+                    )}
                 </div>
             </header>
 
@@ -262,7 +304,6 @@ export default function EditorPage() {
                                         <button onClick={() => { setSourceLang('python'); setCode(SAMPLE_CODE_PYTHON); }} className="block w-full text-left px-4 py-2 text-xs hover:bg-slate-700 transition-colors">Python</button>
                                         <button onClick={() => { setSourceLang('java'); setCode(SAMPLE_CODE_JAVA); }} className="block w-full text-left px-4 py-2 text-xs hover:bg-slate-700 transition-colors">Java</button>
                                         <button onClick={() => { setSourceLang('csp'); setCode(SAMPLE_CODE_CSP); }} className="block w-full text-left px-4 py-2 text-xs hover:bg-slate-700 transition-colors">AP CSP</button>
-                                        <button onClick={() => { setSourceLang('ast'); }} className="block w-full text-left px-4 py-2 text-xs hover:bg-slate-700 transition-colors">AST View</button>
                                     </div>
                                 </div>
                                 <span>SOURCE</span>
@@ -272,7 +313,7 @@ export default function EditorPage() {
                                     value={code}
                                     height="100%"
                                     theme={vscodeDark}
-                                    extensions={getExtensions(sourceLang)}
+                                    extensions={getExtensions(sourceLang === 'ast' ? 'python' : sourceLang)}
                                     onChange={(val) => setCode(val)}
                                     className="text-sm h-full font-mono"
                                 />
@@ -316,7 +357,7 @@ export default function EditorPage() {
                                                 value={getTranslation(panel.lang)}
                                                 height="100%"
                                                 theme={vscodeDark}
-                                                extensions={getExtensions(panel.lang)}
+                                                extensions={getExtensions(panel.lang === 'python' ? 'python' : panel.lang)}
                                                 readOnly={true}
                                                 editable={false}
                                                 className="text-[11px] h-full font-mono"
@@ -368,8 +409,17 @@ export default function EditorPage() {
                 </div>
 
                 {/* Bottom Console Panel */}
-                <div className="h-44 border-t border-slate-800 flex flex-col bg-slate-900 shrink-0 z-[60]">
-                    <div className="h-8 flex items-center px-4 bg-slate-900 border-b border-slate-800">
+                <div
+                    className="border-t border-slate-800 flex flex-col bg-slate-900 shrink-0 z-[60] relative"
+                    style={{ height: outputHeight }}
+                >
+                    {/* Output Resize Handle */}
+                    <div
+                        className={`absolute top-0 left-0 w-full h-1 cursor-row-resize z-[70] transition-colors ${resizingIdx === 'output' ? 'bg-indigo-500' : 'bg-transparent hover:bg-indigo-500/30'}`}
+                        onMouseDown={(e) => onMouseDown(e, 'output')}
+                    />
+
+                    <div className="h-8 flex items-center px-4 bg-slate-900 border-b border-slate-800 shrink-0">
                         <Terminal size={14} className="mr-2 text-indigo-400" />
                         <span className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Console Output</span>
                         {error && (

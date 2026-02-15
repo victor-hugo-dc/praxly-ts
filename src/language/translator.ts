@@ -1,7 +1,5 @@
 import type { Program, Statement, Expression, Block, ClassDeclaration, MethodDeclaration, FieldDeclaration, Constructor } from './ast';
 
-// --- Types & Interfaces ---
-
 export type TargetLanguage = 'java' | 'python' | 'csp';
 
 interface TranslationContext {
@@ -10,7 +8,7 @@ interface TranslationContext {
     functionParamTypes: Map<string, string[]>;
 }
 
-// --- Symbol Table & Precedence ---
+export type SourceMap = Map<string, number>; // AST Node ID -> Line Number
 
 class SymbolTable {
     private scopes: Map<string, string>[] = [new Map()];

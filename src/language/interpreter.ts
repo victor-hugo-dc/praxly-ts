@@ -129,6 +129,35 @@ export class Interpreter {
         return this.output;
     }
 
+    *stepThrough(program: Program): Generator<{ id: string, index: number }, string[], void> {
+        this.output = [];
+        this.globalEnv = new Environment();
+
+        try {
+            yield* this.executeBlockGenerator(program.body, this.globalEnv);
+        } catch (e: any) {
+            this.output.push(`Runtime Error: ${e.message}`);
+        }
+        return this.output;
+    }
+
+    private *executeBlockGenerator(statements: Statement[], env: Environment): Generator<{ id: string, index: number }, void, void> {
+        for (const stmt of statements) {
+            if (stmt.loc && stmt.loc.start) {
+                yield { id: stmt.id, index: stmt.loc.start };
+            } else {
+                yield { id: stmt.id, index: 0 };
+            }
+
+            try {
+                this.execute(stmt, env);
+            } catch (e) {
+                if (e instanceof ReturnException) throw e;
+                throw e;
+            }
+        }
+    }
+
     private registerClass(classDecl: ClassDeclaration) {
         const javaClass = new JavaClass(classDecl.name);
 
